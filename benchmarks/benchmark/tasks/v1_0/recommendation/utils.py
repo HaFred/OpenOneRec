@@ -12,18 +12,18 @@ def extract_ids_from_answer(answer: str) -> list[str]:
 
     Returns a deduplicated list that keeps the first occurrence order.
 
-    >>> extract_ids_from_answer_ordered("<|sid_begin|>123<|sid_end|><|sid_begin|>456<|sid_end|>")
+    >>> extract_ids_from_answer("<|sid_begin|>123<|sid_end|><|sid_begin|>456<|sid_end|>")
     ['123', '456']
     """
     seen: set[str] = set()
-    ordered: list[str] = []
+    correct_answers: list[str] = []
     for part in answer.split('<|sid_begin|>'):
         if '<|sid_end|>' in part:
             sid = part.split('<|sid_end|>')[0].strip()
             if sid and sid not in seen:
-                ordered.append(sid)
+                correct_answers.append(sid)
                 seen.add(sid)
-    return ordered
+    return correct_answers
 
 
 def extract_first_id_from_answer(answer: str) -> str:

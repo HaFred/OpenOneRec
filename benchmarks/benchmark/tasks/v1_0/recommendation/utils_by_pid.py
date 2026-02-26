@@ -134,16 +134,16 @@ def extract_ids_from_answer(answer: list[int]) -> list[int]:
 
     Returns a deduplicated list that keeps the first occurrence order.
 
-    >>> extract_ids_from_answer_ordered([123, 456, 123, 789])
+    >>> extract_ids_from_answer([123, 456, 123, 789])
     [123, 456, 789]
     """
     seen: set[int] = set()
-    ordered: list[int] = []
+    correct_answers: list[int] = []
     for pid in answer:
         if pid != 0 and pid not in seen:
-            ordered.append(pid)
+            correct_answers.append(pid)
             seen.add(pid)
-    return ordered
+    return correct_answers
 
 
 def extract_first_id_from_answer(answer: List[int]) -> int:
