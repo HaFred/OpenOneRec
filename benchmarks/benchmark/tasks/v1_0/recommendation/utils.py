@@ -7,27 +7,23 @@ Functions for SID extraction and recommendation metrics computation.
 from typing import Set, Dict, List, Any
 
 
-def extract_ids_from_answer(answer: str) -> Set[str]:
+def extract_ids_from_answer(answer: str) -> list[str]:
+    """Extract all SIDs from answer field, preserving original order.
+
+    Returns a deduplicated list that keeps the first occurrence order.
+
+    >>> extract_ids_from_answer_ordered("<|sid_begin|>123<|sid_end|><|sid_begin|>456<|sid_end|>")
+    ['123', '456']
     """
-    Extract all SIDs from answer field
-    
-    Args:
-        answer: String containing multiple <|sid_begin|>...<|sid_end|> patterns
-    
-    Returns:
-        Set of extracted SIDs
-    
-    Examples:
-        >>> extract_ids_from_answer("<|sid_begin|>123<|sid_end|><|sid_begin|>456<|sid_end|>")
-        {'123', '456'}
-    """
-    correct_answers = set()
+    seen: set[str] = set()
+    ordered: list[str] = []
     for part in answer.split('<|sid_begin|>'):
         if '<|sid_end|>' in part:
             sid = part.split('<|sid_end|>')[0].strip()
-            if sid:
-                correct_answers.add(sid)
-    return correct_answers
+            if sid and sid not in seen:
+                ordered.append(sid)
+                seen.add(sid)
+    return ordered
 
 
 def extract_first_id_from_answer(answer: str) -> str:
