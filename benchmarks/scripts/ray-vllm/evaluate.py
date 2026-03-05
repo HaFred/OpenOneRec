@@ -1,5 +1,6 @@
 from transformers import HfArgumentParser
 import torch
+from loguru import logger
 
 from benchmark import Benchmark
 from benchmark.console import *
@@ -26,6 +27,10 @@ def main():
     model_config, infra_config, inference_config, generation_config, prompt_config, benchmark_config = \
         parser.parse_args_into_dataclasses()
 
+    logger.info(f"Starting evaluation for model: {model_config.model_path}")
+    logger.info(f"Task types: {benchmark_config.task_types}")
+    logger.info(f"Enable thinking: {prompt_config.enable_thinking}")
+
     # 1. Initialize Benchmark
     benchmark = Benchmark(
         model_path=model_config.model_path,
@@ -37,6 +42,7 @@ def main():
     # Benchmark.print_benchmark_table()
 
     # 2. Initialize Ray + vLLM generator (Multi-Node Support)
+    logger.info("Initializing Ray + vLLM generator")
     generator = RayVllmGenerator(
         model_name_or_path=model_config.model_path,
         checkpoint_path=model_config.checkpoint_path,
@@ -57,6 +63,7 @@ def main():
     )
 
     # 3. Generate text
+    logger.info("Starting benchmark generation tasks")
     benchmark.run(
         generator=generator,
         output_dir=benchmark_config.output_dir,
@@ -74,6 +81,7 @@ def main():
     )
 
     # 4. Release GPU memory occupied by vLLM
+    logger.info("Releasing vLLM GPU memory")
     console.print("\nReleasing vLLM GPU memory...", style=warning_style)
     generator.cleanup()
     del generator
@@ -85,8 +93,10 @@ def main():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
     console.print("✓ GPU memory release completed\n", style=success_style)
+    logger.info("GPU memory release completed")
 
     # 5. Calculate evaluation metrics
+    logger.info("Starting evaluation metrics calculation")
     eval_results_path = f"{benchmark_config.output_dir}/eval_results.json"
     Benchmark.evaluate_dev(
         generation_results_dir=benchmark_config.output_dir,
@@ -95,6 +105,7 @@ def main():
         overwrite=benchmark_config.overwrite,
         task_types=benchmark_config.task_types
     )
+    logger.info(f"Evaluation completed. Results saved to: {eval_results_path}")
 
 
 if __name__ == "__main__":

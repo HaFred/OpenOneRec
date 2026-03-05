@@ -16,6 +16,8 @@ from benchmark.tasks import (
 )
 from benchmark.tasks.v1_0.registry import get_loader, get_evaluator, get_task_config
 
+from loguru import logger
+
 
 class DataLoaderWrapper:
     """Wrapper for unified data loading interface"""
@@ -208,7 +210,9 @@ class Benchmark:
                     style=subhead_style,
                     justify="center",
                 )
-                
+
+                logger.info(f"Starting task [{completed_tasks + 1}/{total_tasks}]: {task_name} | Split: {split} | Sample Size: {display_sample_size}")
+
                 try:
                     task_gen_config = task_config.get("generation_config", {})
                     prompt_config = task_config.get("prompt_config", {})
@@ -228,18 +232,21 @@ class Benchmark:
                         generator=generator,
                         **merged_kwargs
                     )
-                    
+
                     completed_tasks += 1
-                
-                    
+                    logger.info(f"Completed task: {task_name} | Split: {split}")
+
+
                 except Exception as e:
                     import traceback
+                    logger.error(f"Task failed: {task_name}/{split} - {type(e).__name__}: {str(e)}")
                     console.print(f"✗ Task failed: {task_name}/{split}", style=err_style)
                     console.print(f"✗ Error type: {type(e).__name__}", style=err_style)
                     console.print(f"✗ Error message: {str(e)}", style=err_style)
                     console.print("✗ Full stack trace:", style=err_style)
                     console.print(traceback.format_exc(), style=dim_style)
         
+        logger.info(f"Benchmark run completed - Total: {total_tasks}, Completed: {completed_tasks}, Failed: {total_tasks - completed_tasks}")
         console.print(f"Total tasks: {total_tasks}")
         console.print(f"Completed tasks: {completed_tasks}")
         console.print(f"Failed tasks: {total_tasks - completed_tasks}")
@@ -289,6 +296,9 @@ class Benchmark:
             
             console.print(f"Using {evaluator_class.__name__} for {task_name}")
             metrics, per_sample_metrics = evaluator.evaluate()
+
+            # Log evaluation metrics
+            logger.info(f"Evaluation metrics for {task_name}/{split}: {metrics}")
 
             # Compute MFU metrics if hardware info and token stats are available
             try:

@@ -6,6 +6,7 @@ Evaluates model predictions on Item Understand task using WIP (LLM-as-Judge).
 
 import os
 from typing import Dict, Any, Tuple, List
+from loguru import logger
 
 from benchmark.console import console
 from benchmark.tasks.v1_0.base_evaluator import BaseEval
@@ -214,5 +215,7 @@ class ItemUnderstandEvaluator(BaseEval):
         # Print WIP metrics if available
         if metrics.get('macro_wip_unweighted_f1') is not None:
             console.print(f"Macro WIP Unweighted F1: {metrics['macro_wip_unweighted_f1']:.4f}")
+            logger.info(f"Macro WIP Unweighted F1: {metrics['macro_wip_unweighted_f1']:.6f}")
         if metrics.get('macro_wip_double_weighted_f1') is not None:
             console.print(f"Macro WIP Double-weighted F1: {metrics['macro_wip_double_weighted_f1']:.4f}")
+            logger.info(f"Macro WIP Double-weighted F1: {metrics['macro_wip_double_weighted_f1']:.6f}")

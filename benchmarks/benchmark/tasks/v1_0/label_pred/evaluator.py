@@ -6,6 +6,7 @@ Computes AUC metric from logprobs-based predictions.
 """
 
 from typing import Dict, Any, Tuple, List
+from loguru import logger
 
 from benchmark.console import console
 from benchmark.tasks.v1_0.base_evaluator import BaseEval
@@ -228,6 +229,11 @@ class LabelPredEvaluator(BaseEval):
         # Print metrics
         console.print("\n[bold]Metrics:[/bold]")
         console.print(f"  AUC: {metrics['auc']:.4f}")
+
+        # Log metrics with logger.info
+        logger.info(f"AUC: {metrics['auc']:.6f}")
+        if total_predictions > 0:
+            logger.info(f"Accuracy: {accuracy:.2f}%")
 
         # Show some invalid sample examples
         if debug_info["invalid_samples"]:

@@ -95,6 +95,7 @@ lazr.restfulclient==0.14.4
 lazr.uri==1.0.6
 llvmlite==0.43.0
 lm-format-enforcer==0.10.11
+loguru==0.7.2
 lxml==4.9.4
 lz4==3.1.10
 Markdown==3.7

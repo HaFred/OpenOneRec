@@ -7,6 +7,7 @@ Computes Pass@k and Position1_Pass@k metrics.
 
 import json
 from typing import Dict, Any, Tuple, List
+from loguru import logger
 
 from benchmark.console import console, warning_style
 from benchmark.tasks.v1_0.base_evaluator import BaseEval
@@ -463,6 +464,14 @@ class RecommendationEvaluator(BaseEval):
         for metric_name, metric_value in metrics.items():
             if metric_name != "total_samples":
                 console.print(f"  {metric_name}: {metric_value}")
+
+        # Log metrics with logger.info
+        for metric_name, metric_value in metrics.items():
+            if metric_name not in ["total_samples", "select_k_strategy", "evaluation_mode", "sid_to_pid_strategy"]:
+                if isinstance(metric_value, float):
+                    logger.info(f"{metric_name}: {metric_value:.6f}")
+                else:
+                    logger.info(f"{metric_name}: {metric_value}")
 
         # Show some failed examples
         if debug_info["failed_samples"]:
