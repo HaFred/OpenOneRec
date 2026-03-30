@@ -1,0 +1,66 @@
+# Example verl config snippet for MultiRewardManager with generative recsys rewards.
+#
+# This config shows how to set up multi-reward RL training for a generative
+# recommendation model using verl's PPO/GRPO pipeline.
+#
+# To use:
+#   1. Import the registration module in your entrypoint:
+#        import multireward_mgr_support.reward_manager.register_multi
+#   2. Set reward_manager: multi in your verl config
+#   3. Pass component configs via reward_kwargs
+
+# ---- reward_model section of your verl PPO config ----
+reward_model:
+  # Use the multi-reward manager
+  reward_manager: multi
+
+  # Custom reward function file (optional - can provide per-component fns instead)
+  # custom_reward_function:
+  #   path: /path/to/my_recsys_rewards.py
+  #   name: my_compute_score
+
+  reward_kwargs:
+    # Aggregation strategy: weighted_sum | product | min | max | weighted_sum_clipped
+    aggregation: weighted_sum
+
+    # Whether to normalize the final aggregated reward (running mean/std)
+    normalize_final: false
+
+    # Whether to log per-component scores to W&B/TensorBoard
+    log_components: true
+
+    # Optional final clipping
+    # clip_final_min: -1.0
+    # clip_final_max: 2.0
+
+    # Define reward components
+    components:
+      - name: engagement
+        weight: 0.5
+        # normalize: false
+        # clip_min: 0.0
+        # clip_max: 1.0
+
+      - name: diversity
+        weight: 0.2
+        # normalize: false
+
+      - name: novelty
+        weight: 0.15
+        # normalize: false
+
+      - name: coherence
+        weight: 0.1
+        # normalize: false
+
+      - name: format
+        weight: 0.05
+        # normalize: false
+
+# ---- Example for GDPO-style per-dimension advantage ----
+# If you want per-dimension reward normalization (like GDPO), you can also
+# combine MultiRewardManager with verl's GDPO advantage estimator:
+#
+# algorithm:
+#   adv_estimator: gdpo
+#   ...
