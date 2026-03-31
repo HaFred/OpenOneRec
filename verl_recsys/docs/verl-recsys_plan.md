@@ -1,31 +1,3 @@
----
-name: verl-recsys cleanup+migration
-overview: "Runtime-slim both `verl_rl` and `verl_distillation`, then build a new `verl-recsys` framework using a hybrid strategy: `verl_distillation` core + selected reusable modules from `verl_rl` and existing multi-reward support."
-todos:
-  - id: define-runtime-allowlist
-    content: Create concrete runtime allowlist for `verl_rl` and `verl_distillation` (entrypoints, recipe, required `verl/**` modules) and freeze delete list from it.
-    status: completed
-  - id: runtime-slim-cleanup
-    content: Remove runtime-unneeded files/dirs in both trees, including non-essential docs/examples/tests/docker/scripts and non-onpolicy recipes.
-    status: completed
-  - id: normalize-packaging
-    content: Update pyproject/setuptools package inclusion to match slimmed runtime contents and prevent shipping removed components.
-    status: completed
-  - id: bootstrap-verl-recsys
-    content: Create `verl_recsys` package skeleton with rollout server, agent loop worker, reward manager adapter, trainer orchestrator, and unified entrypoint.
-    status: completed
-  - id: integrate-hybrid-features
-    content: Integrate `multireward_mgr_support` and selectively port proven-needed enhanced logic from `verl_rl` behind config flags.
-    status: completed
-  - id: validate-runtime
-    content: Run import/config/dry-run sanity checks to verify cleanup + new framework wiring are functional and references are intact.
-    status: completed
-  - id: roadmap-26q1-alignment
-    content: Map VeRL 26Q1 roadmap items to `verl-recsys` scope and implement relevant extension points in config and runtime wiring.
-    status: completed
-isProject: false
----
-
 # Build `verl-recsys` with Runtime-Slim Cleanup
 
 ## Scope and Strategy
@@ -36,10 +8,10 @@ isProject: false
 
 ## Current Anchors to Reuse
 
-- Distillation entrypoint and task orchestration in `[/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/recipe/onpolicy_distill/main_onpolicy_distill.py](/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/recipe/onpolicy_distill/main_onpolicy_distill.py)` and `[/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/recipe/onpolicy_distill/onpolicy_distill_trainer.py](/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/recipe/onpolicy_distill/onpolicy_distill_trainer.py)`.
-- Core PPO runtime wiring in `[/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/verl/trainer/main_ppo.py](/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/verl/trainer/main_ppo.py)`.
-- Existing multi-reward implementation in `[/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/multireward_mgr_support/reward_manager/multi_reward_manager.py](/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/multireward_mgr_support/reward_manager/multi_reward_manager.py)` and registration in `[/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/multireward_mgr_support/reward_manager/register_multi.py](/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/multireward_mgr_support/reward_manager/register_multi.py)`.
-- Candidate `verl_rl` logic to evaluate/port only if needed: enhanced PPO cluster in `[/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_rl/verl/trainer/main_ppo_enhanced.py](/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_rl/verl/trainer/main_ppo_enhanced.py)`.
+- Distillation entrypoint and task orchestration in `[~/verl_distillation/recipe/onpolicy_distill/main_onpolicy_distill.py](~/verl_distillation/recipe/onpolicy_distill/main_onpolicy_distill.py)` and `[~/verl_distillation/recipe/onpolicy_distill/onpolicy_distill_trainer.py](~/verl_distillation/recipe/onpolicy_distill/onpolicy_distill_trainer.py)`.
+- Core PPO runtime wiring in `[~/verl_distillation/verl/trainer/main_ppo.py](~/verl_distillation/verl/trainer/main_ppo.py)`.
+- Existing multi-reward implementation in `[~/multireward_mgr_support/reward_manager/multi_reward_manager.py](~/multireward_mgr_support/reward_manager/multi_reward_manager.py)` and registration in `[~/multireward_mgr_support/reward_manager/register_multi.py](~/multireward_mgr_support/reward_manager/register_multi.py)`.
+- Candidate `verl_rl` logic to evaluate/port only if needed: enhanced PPO cluster in `[~/verl_rl/verl/trainer/main_ppo_enhanced.py](~/verl_rl/verl/trainer/main_ppo_enhanced.py)`.
 
 ## Runtime-Slim Cleanup Plan
 
@@ -49,8 +21,8 @@ isProject: false
 3. In `verl_distillation/recipe`, keep only `onpolicy_distill` for runtime-slim scope; remove other recipes.
 4. In `verl_rl`, remove high-confidence dead custom files first (notably `algorithm_enhanced.py` and unused enhanced-only wiring if not selected for porting).
 5. Update packaging manifests to match slim runtime footprint:
-  - `[/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/pyproject.toml](/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/pyproject.toml)`
-  - `[/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_rl/pyproject.toml](/Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_rl/pyproject.toml)`
+  - `[~/verl_distillation/pyproject.toml](~/verl_distillation/pyproject.toml)`
+  - `[~/verl_rl/pyproject.toml](~/verl_rl/pyproject.toml)`
 
 ## `verl-recsys` Framework Design
 
