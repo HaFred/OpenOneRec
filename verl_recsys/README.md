@@ -33,6 +33,40 @@ This implementation aligns with relevant items from VeRL's 26Q1 roadmap:
 python -m verl_recsys.main_recsys
 ```
 
+## GR2 DAPO mode
+
+`verl_recsys` now includes an opt-in GR2-oriented DAPO path:
+
+- objective preset: `recsys.objective.name=gr2_dapo`
+- trainer mode: `recsys.training.mode=gr2_dapo`
+- rollout: `actor_rollout_ref.rollout.name=two_stage` (auto-wired by objective preset)
+- reward: paper-approx conditional verifiable reward with anti-order-preservation penalty
+
+Example:
+
+```bash
+python -m verl_recsys.main_recsys \
+  recsys.training.mode=gr2_dapo \
+  recsys.objective.name=gr2_dapo \
+  +recsys.objective.gr2.stage2_beam_size=8 \
+  +recsys.objective.gr2.order_similarity_threshold=0.9
+```
+
+### Expected data fields for conditional reward
+
+The conditional reward scorer uses:
+
+- generated ranking candidates in `extra_info.generated_items` (default key configurable)
+- original candidate order in `extra_info.original_items` (or `extra_info.candidate_order` fallback)
+- verifiable ground truth in `reward_model.ground_truth`
+
+You can customize key mapping and penalty behavior via:
+
+- `recsys.objective.gr2.generated_order_key`
+- `recsys.objective.gr2.original_order_key`
+- `recsys.objective.gr2.order_similarity_threshold`
+- `recsys.objective.gr2.order_penalty_weight`
+
 ## Adapter-first model support
 
 `verl_recsys` now exposes a model-agnostic adapter bundle:

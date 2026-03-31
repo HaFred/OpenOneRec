@@ -52,6 +52,24 @@ recsys:
     name: distill_hybrid
     use_critic: true
     use_reference_policy: true
+    gr2:
+      enable_two_stage_rollout: true
+      clip_ratio_low: 0.2
+      clip_ratio_high: 0.28
+      loss_agg_mode: token-mean
+      stage1_max_tokens: 256
+      stage2_max_tokens: 8
+      stage2_beam_size: 2
+      order_similarity_threshold: 0.9
+      order_penalty_weight: 0.5
+      min_base_reward_for_penalty: 0.0
+      generated_order_key: generated_items
+      original_order_key: original_items
+      overlong_buffer:
+        enable: false
+        len: 128
+        penalty_factor: 1.0
+        log: false
   reward_adapter:
     alpha_click: 1.0
     alpha_watchtime: 0.0

@@ -11,6 +11,7 @@ import ray
 from omegaconf import OmegaConf
 
 from verl_recsys.acceleration.runtime import apply_acceleration_config
+from verl_recsys.rollout.two_stage_vllm_rollout import register_two_stage_rollout
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _VERL_DIST_PATH = os.path.join(_REPO_ROOT, "verl_distillation")
@@ -63,6 +64,7 @@ def run_recsys(config) -> None:
     from verl_recsys.trainer.recsys_task_runner import RecsysTaskRunner
 
     apply_acceleration_config(config)
+    register_two_stage_rollout()
     _inject_recsys_runtime_env(config)
     _apply_teacher_paths(config)
     task_runner_class = ray.remote(num_cpus=1)(RecsysTaskRunner)

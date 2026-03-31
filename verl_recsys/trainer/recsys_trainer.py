@@ -108,6 +108,10 @@ class RecsysTrainerOrchestrator:
         if self.config.recsys.training.get("smoke_build_only", False):
             return RecsysSmokeTrainer
         mode = self.config.recsys.training.get("mode", "onpolicy_distill")
+        if mode == "gr2_dapo":
+            from verl_recsys.trainer.gr2_dapo_trainer import GR2DapoTrainer
+
+            return GR2DapoTrainer
         if mode == "onpolicy_distill":
             try:
                 from recipe.onpolicy_distill.onpolicy_distill_trainer import RayOnPolicyDistillTrainer

@@ -1,0 +1,25 @@
+recsys:
+  model:
+    family: hstu
+  training:
+    mode: gr2_dapo
+  objective:
+    name: gr2_dapo
+    gr2:
+      enable_two_stage_rollout: true
+      clip_ratio_low: 0.2
+      clip_ratio_high: 0.28
+      loss_agg_mode: token-mean
+      stage1_max_tokens: 1024
+      stage2_max_tokens: 16
+      stage2_beam_size: 8
+      order_similarity_threshold: 0.9
+      order_penalty_weight: 0.5
+      min_base_reward_for_penalty: 0.0
+      generated_order_key: generated_items
+      original_order_key: original_items
+      overlong_buffer:
+        enable: false
+        len: 4096
+        penalty_factor: 1.0
+        log: false
