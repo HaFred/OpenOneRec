@@ -1,0 +1,11 @@
+recsys:
+  model:
+    family: hstu
+  objective:
+    name: distill_hybrid
+  acceleration:
+    enable_async_rollout: true
+    enable_async_reward: true
+    enable_fused_kernels: true
+    enable_sequence_balance: true
+

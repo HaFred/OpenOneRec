@@ -12,4 +12,6 @@ python -m verl_recsys.main_recsys \
   --cfg job \
   --resolve
 
-echo "[OK] recsys dry-run config resolved successfully."
+python -m verl_recsys.smoke.recsys_smoke
+
+echo "[OK] recsys dry-run config + smoke checks resolved successfully."

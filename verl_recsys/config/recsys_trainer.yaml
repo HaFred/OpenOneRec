@@ -1,6 +1,6 @@
 hydra:
   searchpath:
-    - file:///Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/verl/trainer/config
+    - pkg://verl.trainer.config
 
 defaults:
   - ppo_trainer
@@ -10,9 +10,12 @@ trainer:
   project_name: verl-recsys
 
 recsys:
+  model:
+    family: hstu
   training:
     mode: onpolicy_distill
     enable_async: false
+    smoke_build_only: false
   model_engine:
     # roadmap alignment: prefer new model engine, keep legacy fallback
     mode: new
@@ -29,6 +32,19 @@ recsys:
   distillation:
     # roadmap alignment: multi-teacher support entrypoint contract
     teacher_model_paths: []
+  objective:
+    # choices: distill_hybrid, policy_only_grpo, actor_critic_gae
+    name: distill_hybrid
+    use_critic: true
+    use_reference_policy: true
+  reward_adapter:
+    alpha_click: 1.0
+    alpha_watchtime: 0.0
+  acceleration:
+    enable_async_rollout: false
+    enable_async_reward: false
+    enable_fused_kernels: false
+    enable_sequence_balance: false
 
 reward_model:
   reward_manager: multi

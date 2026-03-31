@@ -8,13 +8,36 @@ from typing import Any
 from verl.trainer.main_ppo import create_rl_sampler
 from verl.utils.dataset.rl_dataset import collate_fn
 
+from verl_recsys.adapters.registry import AdapterBundle, build_adapter_bundle
 from verl_recsys.agent.loop_worker import AgentLoopWorker
+from verl_recsys.objectives.registry import apply_objective_preset
 from verl_recsys.checkpoint.engine import CheckpointEngineConfig, CheckpointEngineManager
 from verl_recsys.reward.manager import ensure_reward_manager
 from verl_recsys.rollout.server import RolloutServerAdapter, RolloutServerConfig
 
 
-def create_recsys_dataset(data_paths, data_config, tokenizer, processor, is_train=True, max_samples: int = -1):
+class RecsysSmokeTrainer:
+    """No-op trainer used for config/runtime smoke checks."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def init_workers(self) -> None:
+        return
+
+    def fit(self) -> None:
+        return
+
+
+def create_recsys_dataset(
+    data_paths,
+    data_config,
+    tokenizer,
+    processor,
+    adapter_bundle: AdapterBundle,
+    is_train=True,
+    max_samples: int = -1,
+):
     """Recsys-aware dataset resolution with fallback to RLHFDataset."""
     from torch.utils.data import Dataset
 
@@ -34,13 +57,14 @@ def create_recsys_dataset(data_paths, data_config, tokenizer, processor, is_trai
 
         dataset_cls = DynamicGenDataset
 
-    return dataset_cls(
+    dataset = dataset_cls(
         data_files=data_paths,
         tokenizer=tokenizer,
         processor=processor,
         config=data_config,
         max_samples=max_samples,
     )
+    return adapter_bundle.dataset.wrap_dataset(dataset, is_train=is_train)
 
 
 @dataclass
@@ -55,6 +79,9 @@ class RecsysTrainerOrchestrator:
 
     def __init__(self, config: Any):
         self.config = config
+        apply_objective_preset(self.config)
+        self.adapter_bundle = build_adapter_bundle(self.config)
+        self.adapter_bundle.actor.prepare_runtime(self.config)
         rollout_cfg = config.recsys.rollout
         ckpt_cfg = config.recsys.checkpoint
         self.context = RecsysExecutionContext(
@@ -78,6 +105,8 @@ class RecsysTrainerOrchestrator:
         )
 
     def _select_trainer_cls(self):
+        if self.config.recsys.training.get("smoke_build_only", False):
+            return RecsysSmokeTrainer
         mode = self.config.recsys.training.get("mode", "onpolicy_distill")
         if mode == "onpolicy_distill":
             try:
@@ -106,12 +135,19 @@ class RecsysTrainerOrchestrator:
     ) -> Any:
         ensure_reward_manager(self.config)
         trainer_cls = self._select_trainer_cls()
+        if trainer_cls is RecsysSmokeTrainer:
+            return trainer_cls(
+                config=self.config,
+                role_worker_mapping=role_worker_mapping,
+                resource_pool_manager=resource_pool_manager,
+            )
 
         train_dataset = create_recsys_dataset(
             self.config.data.train_files,
             self.config.data,
             tokenizer,
             processor,
+            adapter_bundle=self.adapter_bundle,
             is_train=True,
             max_samples=self.config.data.get("train_max_samples", -1),
         )
@@ -120,10 +156,13 @@ class RecsysTrainerOrchestrator:
             self.config.data,
             tokenizer,
             processor,
+            adapter_bundle=self.adapter_bundle,
             is_train=False,
             max_samples=self.config.data.get("val_max_samples", -1),
         )
         train_sampler = create_rl_sampler(self.config.data, train_dataset)
+        reward_fn = self.adapter_bundle.reward.wrap_reward_fn(reward_fn)
+        val_reward_fn = self.adapter_bundle.reward.wrap_reward_fn(val_reward_fn, is_validation=True)
 
         trainer = trainer_cls(
             config=self.config,

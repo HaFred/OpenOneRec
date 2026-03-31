@@ -1,0 +1,11 @@
+recsys:
+  model:
+    family: sasrec
+  objective:
+    name: policy_only_grpo
+  acceleration:
+    enable_async_rollout: true
+    enable_async_reward: true
+    enable_fused_kernels: false
+    enable_sequence_balance: true
+
