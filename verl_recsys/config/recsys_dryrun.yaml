@@ -1,0 +1,47 @@
+hydra:
+  searchpath:
+    - file:///Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+trainer:
+  project_name: verl-recsys-dryrun
+  experiment_name: dryrun
+  logger: ["console"]
+  total_epochs: 1
+  test_freq: -1
+  val_before_train: false
+
+data:
+  # Placeholder paths used for config-only dry-run checks.
+  train_files: /tmp/recsys_dryrun_train.parquet
+  val_files: /tmp/recsys_dryrun_val.parquet
+  train_batch_size: 1
+  max_prompt_length: 64
+  max_response_length: 64
+
+actor_rollout_ref:
+  model:
+    path: /tmp/recsys_dryrun_student_model
+  ref:
+    model:
+      path: /tmp/recsys_dryrun_teacher_model
+  rollout:
+    name: vllm
+    mode: sync
+    n: 1
+
+recsys:
+  training:
+    mode: onpolicy_distill
+    enable_async: false
+  rollout:
+    backend: vllm
+    mode: sync
+    enable_profile: false
+    enable_router_replay: false
+  distillation:
+    teacher_model_paths:
+      - /tmp/recsys_dryrun_teacher_model

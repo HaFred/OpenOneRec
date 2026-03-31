@@ -1,0 +1,34 @@
+hydra:
+  searchpath:
+    - file:///Users/frederickhong/fred_code/vllm_ge_dev/vllm_gr_v2_fred_fork/openonerec_fred_workingbranch/output/fredfork/verl_distillation/verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+trainer:
+  project_name: verl-recsys
+
+recsys:
+  training:
+    mode: onpolicy_distill
+    enable_async: false
+  model_engine:
+    # roadmap alignment: prefer new model engine, keep legacy fallback
+    mode: new
+  rollout:
+    backend: vllm
+    mode: sync
+    enable_profile: true
+    enable_router_replay: false
+  checkpoint:
+    backend: local_fs
+    manager_enabled: true
+  agent_loop:
+    allow_multi_output: true
+  distillation:
+    # roadmap alignment: multi-teacher support entrypoint contract
+    teacher_model_paths: []
+
+reward_model:
+  reward_manager: multi
