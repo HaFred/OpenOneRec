@@ -54,6 +54,11 @@ from verl.utils.profiler import (
 from verl.utils.profiler.performance import reduce_timing
 from verl.workers.actor.megatron_actor import MegatronPPOActor
 from verl.workers.critic.megatron_critic import MegatronPPOCritic
+from verl.workers.engine.megatron.transformer_impl import (
+    initialize_megatron_model_parallel,
+    summarize_parallelism_state,
+    validate_parallelism,
+)
 from verl.workers.reward_model.megatron.reward_model import MegatronRewardModel
 
 logger = logging.getLogger(__file__)
@@ -103,17 +108,17 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
                 init_method=os.environ.get("DIST_INIT_METHOD", None),
             )
             get_torch_device().set_device(rank)
-
-            mpu.initialize_model_parallel(
-                tensor_model_parallel_size=self.config.actor.megatron.tensor_model_parallel_size,
-                pipeline_model_parallel_size=self.config.actor.megatron.pipeline_model_parallel_size,
-                virtual_pipeline_model_parallel_size=self.config.actor.megatron.virtual_pipeline_model_parallel_size,
-                pipeline_model_parallel_split_rank=None,
-                use_sharp=False,
-                context_parallel_size=self.config.actor.megatron.context_parallel_size,
-                expert_model_parallel_size=self.config.actor.megatron.expert_model_parallel_size,
-                expert_tensor_parallel_size=self.config.actor.megatron.expert_tensor_parallel_size,
-                nccl_communicator_config_path=None,
+            validate_parallelism(
+                self.config.actor.megatron,
+                world_size=torch.distributed.get_world_size(),
+                role_name=f"{self.role}_megatron",
+            )
+            initialize_megatron_model_parallel(self.config.actor.megatron)
+            state = summarize_parallelism_state()
+            print(
+                f"[megatron_init][{self.role}] TP={state['tp_size']} PP={state['pp_size']} "
+                f"CP={state['cp_size']} DP={state['dp_size']} "
+                f"ranks(tp/pp/cp/dp)=({state['tp_rank']}/{state['pp_rank']}/{state['cp_rank']}/{state['dp_rank']})"
             )
 
         set_random_seed(seed=self.config.actor.megatron.seed)
@@ -733,17 +738,17 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
                 init_method=os.environ.get("DIST_INIT_METHOD", None),
             )
             get_torch_device().set_device(rank)
-
-            mpu.initialize_model_parallel(
-                tensor_model_parallel_size=self.config.megatron.tensor_model_parallel_size,
-                pipeline_model_parallel_size=self.config.megatron.pipeline_model_parallel_size,
-                virtual_pipeline_model_parallel_size=self.config.megatron.virtual_pipeline_model_parallel_size,
-                pipeline_model_parallel_split_rank=None,
-                use_sharp=False,
-                context_parallel_size=self.config.megatron.context_parallel_size,
-                expert_model_parallel_size=self.config.megatron.expert_model_parallel_size,
-                expert_tensor_parallel_size=self.config.megatron.expert_tensor_parallel_size,
-                nccl_communicator_config_path=None,
+            validate_parallelism(
+                self.config.megatron,
+                world_size=torch.distributed.get_world_size(),
+                role_name="critic_megatron",
+            )
+            initialize_megatron_model_parallel(self.config.megatron)
+            state = summarize_parallelism_state()
+            print(
+                f"[megatron_init][critic] TP={state['tp_size']} PP={state['pp_size']} "
+                f"CP={state['cp_size']} DP={state['dp_size']} "
+                f"ranks(tp/pp/cp/dp)=({state['tp_rank']}/{state['pp_rank']}/{state['cp_rank']}/{state['dp_rank']})"
             )
 
         set_random_seed(seed=self.config.megatron.seed)
@@ -1011,17 +1016,17 @@ class RewardModelWorker(MegatronWorker, DistProfilerExtension):
                 init_method=os.environ.get("DIST_INIT_METHOD", None),
             )
             get_torch_device().set_device(rank)
-
-            mpu.initialize_model_parallel(
-                tensor_model_parallel_size=self.config.megatron.tensor_model_parallel_size,
-                pipeline_model_parallel_size=self.config.megatron.pipeline_model_parallel_size,
-                virtual_pipeline_model_parallel_size=self.config.megatron.virtual_pipeline_model_parallel_size,
-                pipeline_model_parallel_split_rank=None,
-                use_sharp=False,
-                context_parallel_size=self.config.megatron.context_parallel_size,
-                expert_model_parallel_size=self.config.megatron.expert_model_parallel_size,
-                expert_tensor_parallel_size=self.config.megatron.expert_tensor_parallel_size,
-                nccl_communicator_config_path=None,
+            validate_parallelism(
+                self.config.megatron,
+                world_size=torch.distributed.get_world_size(),
+                role_name="reward_model_megatron",
+            )
+            initialize_megatron_model_parallel(self.config.megatron)
+            state = summarize_parallelism_state()
+            print(
+                f"[megatron_init][reward_model] TP={state['tp_size']} PP={state['pp_size']} "
+                f"CP={state['cp_size']} DP={state['dp_size']} "
+                f"ranks(tp/pp/cp/dp)=({state['tp_rank']}/{state['pp_rank']}/{state['cp_rank']}/{state['dp_rank']})"
             )
 
         set_random_seed(seed=self.config.megatron.seed)

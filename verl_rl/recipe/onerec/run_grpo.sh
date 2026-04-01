@@ -27,7 +27,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Model Configuration
 # ============================================================================
 export BASE_MODEL=${BASE_MODEL:-"/path/to/your/model"}
-export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}
+export TP_SIZE=${TP_SIZE:-2}
+export PP_SIZE=${PP_SIZE:-2}
+export CP_SIZE=${CP_SIZE:-1}
+export EP_SIZE=${EP_SIZE:-1}
+export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-$TP_SIZE}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 # ============================================================================
@@ -42,7 +46,19 @@ export TEMPERATURE=${TEMPERATURE:-1}
 # ============================================================================
 export USE_DYNAMIC_BSZ=${USE_DYNAMIC_BSZ:-True}
 export MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-40960}
-export TRAIN_BATCH_SIZE=$((N_GPUS * N_NODES))
+export WORLD_SIZE=$((N_GPUS * N_NODES))
+export MODEL_PARALLEL_SIZE=$((TP_SIZE * PP_SIZE * CP_SIZE * EP_SIZE))
+if [ "$MODEL_PARALLEL_SIZE" -le 0 ]; then
+    echo "Invalid MODEL_PARALLEL_SIZE=$MODEL_PARALLEL_SIZE. Check TP/PP/CP/EP settings."
+    exit 1
+fi
+if [ $((WORLD_SIZE % MODEL_PARALLEL_SIZE)) -ne 0 ]; then
+    echo "Invalid 5D topology: WORLD_SIZE=$WORLD_SIZE is not divisible by TP*PP*CP*EP=$MODEL_PARALLEL_SIZE"
+    exit 1
+fi
+export DP_SIZE=$((WORLD_SIZE / MODEL_PARALLEL_SIZE))
+export TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-$DP_SIZE}
+export PPO_MICRO_BATCH_PER_GPU=${PPO_MICRO_BATCH_PER_GPU:-1}
 
 # ============================================================================
 # Rollout Configuration
@@ -88,6 +104,7 @@ echo "GRPO Training with Two-Stage Rollout"
 echo "==================================="
 echo "Model: $BASE_MODEL"
 echo "Cluster: $N_NODES nodes x $N_GPUS GPUs"
+echo "5D Parallelism: TP=$TP_SIZE PP=$PP_SIZE CP=$CP_SIZE EP=$EP_SIZE DP=$DP_SIZE"
 echo "Batch Size: $TRAIN_BATCH_SIZE"
 echo "Learning Rate: $LEARNING_RATE"
 echo "Rollout N: $ROLLOUT_N"
@@ -104,6 +121,7 @@ mkdir -p logs
 conda activate verl
 
 python3 -u -m recipe.onerec.main_onerec_ppo \
+    --config-name ppo_megatron_trainer \
     algorithm.adv_estimator=grpo \
     data.train_files=$TRAIN_FILES \
     data.val_files=$VAL_FILES \
@@ -132,6 +150,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     custom_reward_function.name=compute_score \
     actor_rollout_ref.actor.use_dynamic_bsz=$USE_DYNAMIC_BSZ \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_PER_GPU \
     actor_rollout_ref.actor.ppo_mini_batch_size=$TRAIN_BATCH_SIZE \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
@@ -171,9 +190,19 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     trainer.default_local_dir=$OUTPUT_DIR/ckpt \
     trainer.total_epochs=20 \
     trainer.val_before_train=True \
-    actor_rollout_ref.ref.strategy=fsdp2 \
-    actor_rollout_ref.actor.strategy=fsdp2 \
+    actor_rollout_ref.actor.strategy=megatron \
+    actor_rollout_ref.ref.strategy=megatron \
+    critic.strategy=megatron \
+    reward_model.strategy=megatron \
+    ++actor_rollout_ref.actor.megatron.tensor_model_parallel_size=$TP_SIZE \
+    ++actor_rollout_ref.actor.megatron.pipeline_model_parallel_size=$PP_SIZE \
+    ++actor_rollout_ref.actor.megatron.context_parallel_size=$CP_SIZE \
+    ++actor_rollout_ref.actor.megatron.expert_model_parallel_size=$EP_SIZE \
+    ++actor_rollout_ref.ref.megatron.tensor_model_parallel_size=$TP_SIZE \
+    ++actor_rollout_ref.ref.megatron.pipeline_model_parallel_size=$PP_SIZE \
+    ++actor_rollout_ref.ref.megatron.context_parallel_size=$CP_SIZE \
+    ++actor_rollout_ref.ref.megatron.expert_model_parallel_size=$EP_SIZE \
     ++critic.enable=False \
-    ++actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
-    ++actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16 \
+    ++actor_rollout_ref.actor.megatron.sequence_parallel=True \
+    ++actor_rollout_ref.ref.megatron.sequence_parallel=True \
     "$@"

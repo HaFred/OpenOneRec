@@ -13,5 +13,6 @@
 # limitations under the License.
 from .base import BaseEngine, EngineRegistry
 from .fsdp import FSDPEngine
+from .megatron.engine_impl import MegatronEngine
 
-__all__ = ["BaseEngine", "EngineRegistry", "FSDPEngine"]
+__all__ = ["BaseEngine", "EngineRegistry", "FSDPEngine", "MegatronEngine"]
