@@ -9,9 +9,9 @@ Reinforcement learning training for OneRec recommendation model based on verl fr
 
 ```bash
 cat > /etc/mpi/hostfile << EOF
-192.168.1.100 slots=8
-192.168.1.101 slots=8
-192.168.1.102 slots=8
+192.168.1.100 slots=4
+192.168.1.101 slots=4
+192.168.1.102 slots=4
 EOF
 ```
 

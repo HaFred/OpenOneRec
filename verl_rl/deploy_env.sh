@@ -7,6 +7,10 @@ set -e
 SCRIPT_DIR=$(cd $(dirname $0); pwd)
 PROJECT_DIR=${SCRIPT_DIR}
 
+# customized
+clear
+CONDA_ENV_NAME=verl_rl_recsys
+
 # Configuration
 CONDA_ENV_NAME=${CONDA_ENV_NAME:-"verl"}
 PYTHON_VERSION=${PYTHON_VERSION:-"3.10"}
@@ -47,8 +51,8 @@ setup_proxy() {
 install_local() {
     log_info "Installing environment..."
 
-    # Setup proxy first
-    setup_proxy
+    # # Setup proxy first, but no need on our side
+    # setup_proxy
 
     if ! init_conda; then
         log_error "Conda not found."
