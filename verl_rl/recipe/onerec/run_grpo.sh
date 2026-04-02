@@ -139,13 +139,13 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     data.custom_cls.name=OneRecDataset \
     data.reward_fn_key='source' \
     ++data.data_source_key='source' \
-    actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
-    actor_rollout_ref.actor.entropy_checkpointing=True \
+    ++actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
+    ++actor_rollout_ref.actor.entropy_checkpointing=True \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.calculate_log_probs=False \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
-    actor_rollout_ref.model.enable_activation_offload=True \
-    actor_rollout_ref.model.use_remove_padding=True \
+    ++actor_rollout_ref.model.enable_activation_offload=True \
+    ++actor_rollout_ref.model.use_remove_padding=True \
     custom_reward_function.path=$SCRIPT_DIR/onerec_recipe.py \
     custom_reward_function.name=compute_score \
     actor_rollout_ref.actor.use_dynamic_bsz=$USE_DYNAMIC_BSZ \
@@ -160,7 +160,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
     actor_rollout_ref.model.path=$BASE_MODEL \
-    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    ++actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.rollout.n=$ROLLOUT_N \
     actor_rollout_ref.rollout.dtype=bfloat16 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
