@@ -187,6 +187,37 @@ flowchart TD
     X --> Y["actor_rollout_wg.update_actor"]
 ```
 
+### GRPO Block Mapping
+
+For the 4-block GRPO illustration, the concrete mapping in `verl_rl/verl/trainer/ppo/ray_trainer.py` is:
+
+1. **Block 1 (sampling group responses)**  
+   - `gen_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)`  
+   - `self.actor_rollout_wg.generate_sequences(...)` (or `self.async_rollout_manager.generate_sequences(...)`)  
+   - Outputs stored in `batch.batch["responses"]`.
+
+2. **Block 2 (reward scoring)**  
+   - Reward model path: `self.rm_wg.compute_rm_score(batch)`  
+   - Rule/custom reward path: `compute_reward(batch, self.reward_fn)`  
+   - Writes per-token score to `batch.batch["token_level_scores"]`.
+
+3. **Block 3 (group-relative advantage; where ref model comes in)**  
+   - **Group-relative GRPO advantage itself** is computed from grouped rewards using:  
+     - `compute_advantage(...)` -> `core_algos.compute_grpo_outcome_advantage(...)`  
+     - Group key: `data.non_tensor_batch["uid"]`  
+     - Reward input: `token_level_rewards` (or `token_level_scores` when KL-in-reward is off)  
+   - **Reference model contribution** is *via KL shaping before/around this step*, not via group statistics directly:  
+     - `ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)`  
+       (or `self.actor_rollout_wg.compute_ref_log_prob(batch)` when `ref_in_actor=True`)  
+     - `apply_kl_penalty(...)` uses `old_log_probs` and `ref_log_prob`, then writes  
+       `batch.batch["token_level_rewards"] = token_level_scores - beta * KL`  
+     - Block 3 then consumes these KL-shaped rewards when computing `advantages`.
+
+4. **Block 4 (policy optimization / PPO-style update)**  
+   - `old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)`  
+   - `actor_output = self.actor_rollout_wg.update_actor(batch)`  
+   - Uses `batch.batch["advantages"]`, `old_log_probs`, `response_mask`, etc.
+
 ---
 
 ## Possible Future Plan
