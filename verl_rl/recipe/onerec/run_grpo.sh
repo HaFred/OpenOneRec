@@ -194,6 +194,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     actor_rollout_ref.ref.strategy=megatron \
     critic.strategy=megatron \
     reward_model.strategy=megatron \
+    ++actor_rollout_ref.actor.megatron.use_mbridge=True \
     ++actor_rollout_ref.actor.megatron.tensor_model_parallel_size=$TP_SIZE \
     ++actor_rollout_ref.actor.megatron.pipeline_model_parallel_size=$PP_SIZE \
     ++actor_rollout_ref.actor.megatron.context_parallel_size=$CP_SIZE \

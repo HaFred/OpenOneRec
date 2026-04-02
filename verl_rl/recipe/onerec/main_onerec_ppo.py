@@ -155,7 +155,8 @@ class OneRecTaskRunner:
         elif config.actor_rollout_ref.actor.strategy == "megatron":
             assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
             from verl.single_controller.ray.megatron import NVMegatronRayWorkerGroup
-            from verl.workers.megatron_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
+            from recipe.onerec.onerec_megatron_workers import OneRecMegatronActorRolloutRefWorker as ActorRolloutRefWorker
+            from verl.workers.megatron_workers import AsyncActorRolloutRefWorker, CriticWorker
 
             actor_rollout_cls = (
                 AsyncActorRolloutRefWorker
