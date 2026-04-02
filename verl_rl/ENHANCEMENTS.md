@@ -2,6 +2,12 @@
 
 This document outlines the comprehensive enhancements made to the verl_rl codebase, incorporating cutting-edge features from the latest verl research releases.
 
+## Additional bells & whistles
+Below overview will be the full picture of the enhancements that can be done for the current `verl_dist` (openonerec.post_train.stage_2), `verl_rl` (stage 3 that really incorporate semantic IDs). But here in this section we decided to first bring out some pre-bells&whistles that can serve as a refresher for the audiences.
+
+1. Constraint BS masking - semantic rewards mgr
+2. Advanced rollout implementation - cont. batching / dynamic inflights ctrl / disaggregated stages with KV transfer on mooncake at scale...
+
 ## Overview
 
 The enhanced verl_rl integrates the following major improvements:

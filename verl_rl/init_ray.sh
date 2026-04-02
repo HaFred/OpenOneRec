@@ -11,6 +11,17 @@ set -e
 HEAD_NODE_IP=${1:-"127.0.0.1"}
 PORT=${2:-6379}
 RANK=${3:-0}
+# export RAY_TMPDIR="/nvme3n1p1/fredhong/ray_temp"
+export RAY_TMPDIR="/nvme5n1p1/fredhong/ray_tmp"
+CONDA_ENV_NAME=verl_rl_recsys
+
+# export CUDA_VISIBLE_DEVICES=2,3,4,5
+# NUM_GPUS=4
+
+export CUDA_VISIBLE_DEVICES=4,5
+NUM_GPUS=2
+
+export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 
 # Configuration
 NUM_CPUS=${NUM_CPUS:-""}

@@ -8,6 +8,8 @@ set -e
 SCRIPT_DIR=$(cd $(dirname $0); pwd)
 PROJECT_DIR=${SCRIPT_DIR}
 
+CONDA_ENV_NAME=verl_rl_recsys
+
 # Configuration
 PORT=${RAY_PORT:-6379}
 HOSTFILE=${HOSTFILE:-"/etc/mpi/hostfile"}

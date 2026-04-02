@@ -17,7 +17,7 @@ import os
 from functools import partial
 
 import ray
-
+from loguru import logger
 from verl import DataProto
 from verl.utils.reward_score import default_compute_score
 
@@ -108,6 +108,11 @@ def load_reward_manager(config, tokenizer, num_examine, **reward_kwargs):
     reward_manager_cls = get_reward_manager_cls(reward_manager_name)
 
     # Try to get a custom reward function based on the configuration
+    logger.info(f"config as {config}\n\n")
+    # breakpoint()
+    # print("breakpoint")
+    # import pdb; pdb.set_trace()
+
     compute_score = get_custom_reward_fn(config)
     final_compute_score = compute_score
 

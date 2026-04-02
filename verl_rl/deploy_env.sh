@@ -7,6 +7,10 @@ set -e
 SCRIPT_DIR=$(cd $(dirname $0); pwd)
 PROJECT_DIR=${SCRIPT_DIR}
 
+# customized
+clear
+CONDA_ENV_NAME=verl_rl_recsys
+
 # Configuration
 CONDA_ENV_NAME=${CONDA_ENV_NAME:-"verl"}
 PYTHON_VERSION=${PYTHON_VERSION:-"3.10"}
@@ -47,8 +51,8 @@ setup_proxy() {
 install_local() {
     log_info "Installing environment..."
 
-    # Setup proxy first
-    setup_proxy
+    # # Setup proxy first, but no need on our side
+    # setup_proxy
 
     if ! init_conda; then
         log_error "Conda not found."
@@ -85,7 +89,9 @@ install_local() {
 
     # Install flash-attn separately
     log_info "Installing flash-attn..."
-    pip install flash-attn==2.7.4.post1 --no-build-isolation
+    # export PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org"
+    # pip install flash-attn --no-build-isolation --no-cache-dir
+    MAX_JOBS=16  pip install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir
 
     # Install verl package
     log_info "Installing verl package..."

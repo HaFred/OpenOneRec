@@ -5,14 +5,16 @@ set -e
 
 # Configuration
 # onerec dataset output path, rl uses datasets starting with sft
-REC_DATA_PATH="../output"
+# REC_DATA_PATH="../output"
+# REC_DATA_PATH=/data/models/fredhong/hf_home/OpenOneRec-RecIF/product_pid2sid.parquet
+PRODUCT_REC=/data/models/fredhong/hf_home/OpenOneRec-RecIF/benchmark_data/product/product_test.parquet
 
-# Tasks that RL depends on
-VIDEO_REC=${REC_DATA_PATH}/sft_video_rec.parquet
-AD_REC=${REC_DATA_PATH}/sft_ad_rec.parquet
-PRODUCT_REC=${REC_DATA_PATH}/sft_product_rec.parquet
-INTERACTIVE_REC=${REC_DATA_PATH}/sft_interactive_rec.parquet
-LABEL_COND_REC=${REC_DATA_PATH}/sft_label_cond_rec.parquet
+# # Tasks that RL depends on
+# VIDEO_REC=${REC_DATA_PATH}/sft_video_rec.parquet
+# AD_REC=${REC_DATA_PATH}/sft_ad_rec.parquet
+# PRODUCT_REC=${REC_DATA_PATH}/sft_product_rec.parquet
+# INTERACTIVE_REC=${REC_DATA_PATH}/sft_interactive_rec.parquet
+# LABEL_COND_REC=${REC_DATA_PATH}/sft_label_cond_rec.parquet
 
 # Output configuration
 OUTPUT_DIR="../output/rl_data"
@@ -25,11 +27,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Define all task files to process
 declare -a TASK_FILES=(
-    "${VIDEO_REC}"
-    "${AD_REC}"
+    # "${VIDEO_REC}"
+    # "${AD_REC}"
+    # "${INTERACTIVE_REC}"
+    # "${LABEL_COND_REC}"
     "${PRODUCT_REC}"
-    "${INTERACTIVE_REC}"
-    "${LABEL_COND_REC}"
 )
 
 # Check if input files exist
