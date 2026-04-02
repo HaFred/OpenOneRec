@@ -141,133 +141,50 @@ This is how Megatron parallel training is being included in practice for this br
 
 ---
 
-## OneRec-verl Megatron Training At Scale
+## Megatron `use_mbridge=True` for OneRec Arch.
+
+Current OneRec Megatron RL call stack in `verl_rl` (`use_mbridge=True`) is:
+
+1. Launcher: `recipe/onerec/run_grpo.sh` -> `python -m recipe.onerec.main_onerec_ppo`.
+2. Driver: `OneRecTaskRunner.run()` builds worker mapping and creates `RayPPOTrainer`.
+3. Worker bootstrap: `RayPPOTrainer.init_workers()` -> `NVMegatronRayWorkerGroup` -> worker `init_model()`.
+4. Megatron model init path: `MegatronWorker._init_hf_config_and_tf_config(..., use_mbridge=True)` -> `AutoBridge.from_config(...)` -> `bridge.get_model/load_weights`.
+5. Rollout path:
+   - Sync two-stage OneRec: `OneRecMegatronActorRolloutRefWorker._build_rollout()` -> `OneRecvLLMRollout` + `MegatronVLLMShardingManager(bridge=self.bridge)`.
+   - Async path (non-two-stage Megatron): `AsyncActorRolloutRefWorker` + `AgentLoopManager` + async LLM server actors.
+6. Training loop (`RayPPOTrainer.fit()`): generate -> reward manager / RM worker -> log-prob/ref/value -> advantage -> critic/actor update.
 
 ```mermaid
-flowchart TB
-    subgraph L1["Layer 1: Launch and Topology Inputs"]
-        U["Operator / Scheduler"]
-        S1["run_grpo.sh"]
-        T1["TP_SIZE"]
-        T2["PP_SIZE"]
-        T3["CP_SIZE"]
-        T4["EP_SIZE"]
-        T5["N_NODES x N_GPUS = WORLD_SIZE"]
-        T6["MODEL_PARALLEL_SIZE = TP*PP*CP*EP"]
-        T7["DP_SIZE = WORLD_SIZE / MODEL_PARALLEL_SIZE"]
-        C0{"WORLD_SIZE % MODEL_PARALLEL_SIZE == 0 ?"}
-    end
+flowchart TD
+    A["run_grpo.sh<br/>main_onerec_ppo"] --> B["OneRecTaskRunner.run()"]
+    B --> C["Build role_worker_mapping<br/>Megatron strategy"]
+    C --> D["RayPPOTrainer(...)"]
+    D --> E["init_workers()"]
 
-    U --> S1
-    S1 --> T1
-    S1 --> T2
-    S1 --> T3
-    S1 --> T4
-    S1 --> T5
-    T1 --> T6
-    T2 --> T6
-    T3 --> T6
-    T4 --> T6
-    T5 --> C0
-    T6 --> C0
-    C0 -->|Yes| T7
-    C0 -->|No| E0["Fail Fast: invalid 5D topology"]
+    E --> F["NVMegatronRayWorkerGroup<br/>spawn colocated workers"]
+    F --> G["Actor/Critic/Ref/RM init_model()"]
 
-    subgraph L2["Layer 2: Hydra Config Wiring"]
-        H0["config-name ppo_megatron_trainer"]
-        H1["actor.strategy = megatron"]
-        H2["ref.strategy = megatron"]
-        H3["critic.strategy = megatron"]
-        H4["reward_model.strategy = megatron"]
-        H5["actor/ref megatron overrides\nTP/PP/CP/EP + sequence_parallel"]
-    end
+    G --> H["MegatronWorker._init_hf_config_and_tf_config(..., use_mbridge=True)"]
+    H --> I["AutoBridge.from_config(hf_config)<br/>bridge=configured"]
+    I --> J["bridge.get_model(...)"]
+    I --> K["bridge.load_weights(...)"]
 
-    T7 --> H0
-    H0 --> H1
-    H0 --> H2
-    H0 --> H3
-    H0 --> H4
-    H0 --> H5
+    G --> L{"rollout.name"}
+    L -->|two_stage + sync| M["OneRecMegatronActorRolloutRefWorker._build_rollout()"]
+    M --> N["OneRecvLLMRollout<br/>(stage1 generate + stage2 beam_search)"]
+    M --> O["MegatronVLLMShardingManager<br/>bridge.export_weights()"]
 
-    subgraph L3["Layer 3: Trainer Validation Control Plane"]
-        R0["RayPPOTrainer._validate_config()"]
-        R1["Recompute model_parallel_size = TP*PP*CP*EP"]
-        R2{"n_gpus % model_parallel_size == 0 ?"}
-        R3["megatron_dp = n_gpus / model_parallel_size"]
-        R4["minimal_bsz = megatron_dp * ppo_micro_batch_size_per_gpu"]
-        R5["Log 5D summary:\nTP/PP/CP/EP/DP + rollout TP/DP"]
-    end
+    L -->|vllm/sglang async| P["AsyncActorRolloutRefWorker"]
+    P --> Q["AgentLoopManager"]
+    Q --> R["async_llm_server_* actors + AgentLoopWorker"]
 
-    H1 --> R0
-    H2 --> R0
-    H3 --> R0
-    H4 --> R0
-    H5 --> R0
-    R0 --> R1 --> R2
-    R2 -->|Yes| R3 --> R4 --> R5
-    R2 -->|No| E1["Assertion Error: invalid trainer topology"]
-
-    subgraph L4["Layer 4: Runtime Bootstrap per Role"]
-        W0["Worker roles:\nActorRolloutRef / Critic / RewardModel"]
-        W1["Init torch.distributed process group\nNCCL backend + device set"]
-        W2["validate_parallelism(megatron_cfg, world_size)"]
-        W3["initialize_megatron_model_parallel(megatron_cfg)"]
-        W4["summarize_parallelism_state()"]
-        W5["Print runtime ranks:\ntp_rank, pp_rank, cp_rank, dp_rank"]
-    end
-
-    R5 --> W0 --> W1 --> W2 --> W3 --> W4 --> W5
-
-    subgraph L5["Layer 5: Shared Megatron Helper Module"]
-        M0["transformer_impl.py"]
-        M1["get_parallelism_tuple()"]
-        M2["validate_parallelism()"]
-        M3["initialize_megatron_model_parallel()"]
-        M4["summarize_parallelism_state()"]
-        M5["Guard: skip init if mpu already initialized"]
-        M6["Optional: dynamic_context_parallel\nsignature-checked"]
-    end
-
-    W2 --> M2
-    W3 --> M3
-    W4 --> M4
-    M0 --> M1
-    M0 --> M2
-    M0 --> M3
-    M0 --> M4
-    M3 --> M5
-    M3 --> M6
-
-    subgraph L6["Layer 6: Effective Parallel Runtime"]
-        P0["Megatron Parallel Groups"]
-        P1["Tensor Parallel TP"]
-        P2["Pipeline Parallel PP"]
-        P3["Context Parallel CP"]
-        P4["Expert Parallel EP"]
-        P5["Data Parallel DP = WORLD / TP*PP*CP*EP"]
-        P6["Consistent group state across roles"]
-        P7["Megatron-based actor/ref/critic/reward training loop"]
-    end
-
-    W5 --> P0
-    P0 --> P1
-    P0 --> P2
-    P0 --> P3
-    P0 --> P4
-    P0 --> P5
-    P1 --> P6
-    P2 --> P6
-    P3 --> P6
-    P4 --> P6
-    P5 --> P6
-    P6 --> P7
-
-    subgraph X1["Orthogonal Track: 1f4a99e not RL Megatron wiring"]
-        X0["pretrain scripts + gradients"]
-        X2["max_grad_norm clipping + resume fix"]
-    end
-
-    X0 --> X2
+    D --> S["fit() training loop"]
+    S --> T["Generate sequences<br/>(WG or AgentLoopManager)"]
+    T --> U["Reward path<br/>reward_fn / rm_wg.compute_rm_score"]
+    U --> V["compute_log_prob + compute_ref_log_prob + compute_values"]
+    V --> W["compute_advantage"]
+    W --> X["critic_wg.update_critic (if enabled)"]
+    X --> Y["actor_rollout_wg.update_actor"]
 ```
 
 ---
