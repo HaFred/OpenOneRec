@@ -80,6 +80,7 @@ export USE_FORCE_PREFIX=${USE_FORCE_PREFIX:-False}
 export DATA_DIR=${DATA_DIR:-"$(realpath ../output/rl_data)"}
 export TRAIN_FILES=${TRAIN_FILES:-"[$DATA_DIR/train.parquet]"}
 export VAL_FILES=${VAL_FILES:-"[$DATA_DIR/test.parquet]"}
+export OPENIF_PRODUCT_PARQUET_SOURCE=${OPENIF_PRODUCT_PARQUET_SOURCE:-"data_source"}
 
 # ============================================================================
 # Output Configuration
@@ -118,7 +119,7 @@ echo "==================================="
 # ============================================================================
 mkdir -p logs
 
-conda activate verl
+# conda activate verl
 
 python3 -u -m recipe.onerec.main_onerec_ppo \
     --config-name ppo_megatron_trainer \
@@ -137,8 +138,8 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     data.truncation='error' \
     data.custom_cls.path=$SCRIPT_DIR/onerec_recipe.py \
     data.custom_cls.name=OneRecDataset \
-    data.reward_fn_key='source' \
-    ++data.data_source_key='source' \
+    data.reward_fn_key=$OPENIF_PRODUCT_PARQUET_SOURCE \
+    ++data.data_source_key=$OPENIF_PRODUCT_PARQUET_SOURCE \
     actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
     actor_rollout_ref.actor.entropy_checkpointing=True \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
