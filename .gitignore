@@ -6,6 +6,7 @@
 *.swp
 *.swo
 *~
+outputs
 
 # OS
 .DS_Store

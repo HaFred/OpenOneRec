@@ -89,7 +89,9 @@ install_local() {
 
     # Install flash-attn separately
     log_info "Installing flash-attn..."
-    pip install flash-attn==2.7.4.post1 --no-build-isolation
+    # export PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org"
+    # pip install flash-attn --no-build-isolation --no-cache-dir
+    MAX_JOBS=16  pip install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir
 
     # Install verl package
     log_info "Installing verl package..."
