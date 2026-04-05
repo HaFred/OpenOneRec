@@ -78,6 +78,12 @@ export ENABLE_THINK=${ENABLE_THINK:-False}
 export ENABLE_NONTHINK=${ENABLE_NONTHINK:-False}
 export USE_FORCE_PREFIX=${USE_FORCE_PREFIX:-False}
 
+# Thinking Quality Reward (Trust-GRPO inspired, monitors stage-1 CoT quality)
+# Set ENABLE_THINKING_REWARD=True to blend thinking-quality signal into the
+# GRPO reward:  score = (1-w)*outcome + w*thinking_quality*trust_weight
+export ENABLE_THINKING_REWARD=${ENABLE_THINKING_REWARD:-False}
+export THINKING_REWARD_WEIGHT=${THINKING_REWARD_WEIGHT:-0.3}
+
 # ============================================================================
 # Data Configuration
 # ============================================================================
@@ -116,12 +122,13 @@ echo "Rollout N: $ROLLOUT_N"
 echo "Stage2 Beam Size: $STAGE2_BEAM_SIZE"
 echo "Enable Think: $ENABLE_THINK"
 echo "Enable NonThink: $ENABLE_NONTHINK"
+echo "Thinking Reward: $ENABLE_THINKING_REWARD (weight=$THINKING_REWARD_WEIGHT)"
 echo "==================================="
 
 # ============================================================================
 # Pre-flight: validate model architecture for Megatron mcore
 # ============================================================================
-python3 -u -m recipe.onerec.megatron_mcore_support \
+python3 -u -m recipe.validate_onerec.megatron_mcore_support \
     --model-path "$BASE_MODEL" \
     --expected-arch "$EXPECTED_MODEL_ARCH"
 
@@ -158,6 +165,8 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     ++actor_rollout_ref.model.use_remove_padding=True \
     custom_reward_function.path=$SCRIPT_DIR/onerec_recipe.py \
     custom_reward_function.name=compute_score \
+    ++custom_reward_function.reward_kwargs.enable_thinking_reward=$ENABLE_THINKING_REWARD \
+    ++custom_reward_function.reward_kwargs.thinking_reward_weight=$THINKING_REWARD_WEIGHT \
     actor_rollout_ref.actor.use_dynamic_bsz=$USE_DYNAMIC_BSZ \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_PER_GPU \

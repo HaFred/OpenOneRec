@@ -20,7 +20,7 @@ from verl.utils.model import compute_position_id_with_mask
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["collate_fn", "OneRecDataset", "compute_score"]
+__all__ = ["collate_fn", "OneRecDataset", "compute_score", "thinking_quality_reward"]
 
 
 def _extract_prompt_fields_row(
@@ -390,6 +390,221 @@ class OneRecDataset(Dataset):
 
 SLOT_PATTERN = re.compile(r"<s_a_(\d+)><s_b_(\d+)><s_c_(\d+)>")
 
+# ---------------------------------------------------------------------------
+# Thinking Quality Reward  (Trust-GRPO inspired)
+#
+# References:
+#   - SophiaVL-R1 (2025): Trustworthiness-weighted thinking rewards with
+#     annealing to combat reward hacking.
+#   - OneRec-Think (2025): Recommendation-specific CoT reward that accounts
+#     for the multi-validity of user preferences.
+#   - lambda-GRPO (2025): GRPO implicitly acts as a process reward model;
+#     explicit thinking supervision further improves exploration.
+#
+# Four orthogonal dimensions are scored in [0, 1]:
+#   1. Coherence  – structural quality (length, repetition).
+#   2. Relevance  – presence of recommendation-related reasoning.
+#   3. Specificity – concrete item / category references vs. vague filler.
+#   4. Faithfulness – consistency between reasoning and final predictions.
+#
+# A Trust-GRPO mechanism discounts the thinking reward when the outcome
+# reward is zero, preventing the model from gaming the thinking score while
+# producing wrong item predictions.
+# ---------------------------------------------------------------------------
+
+
+def _extract_thinking(prediction: str) -> str:
+    """Return the text inside <think>...</think>, or '' if absent."""
+    if "<think>" not in prediction or "</think>" not in prediction:
+        return ""
+    start = prediction.find("<think>") + len("<think>")
+    end = prediction.find("</think>")
+    if end <= start:
+        return ""
+    return prediction[start:end].strip()
+
+
+def _extract_items_text(prediction: str) -> str:
+    """Return the item-prediction text after </think>."""
+    if "</think>" not in prediction:
+        return ""
+    return prediction[prediction.find("</think>") + len("</think>"):].strip()
+
+
+def _char_ngram_repetition(text: str, n: int = 6) -> float:
+    """Fraction of *repeated* character n-grams (0 = unique, 1 = all repeated)."""
+    text = text.strip()
+    if len(text) < n:
+        return 0.0
+    ngrams = [text[i : i + n] for i in range(len(text) - n + 1)]
+    return 1.0 - len(set(ngrams)) / len(ngrams)
+
+
+def thinking_coherence_reward(thinking_text: str) -> float:
+    """Evaluate structural quality: reasonable length + low repetition.
+
+    Returns a score in [0, 1].
+    """
+    if not thinking_text:
+        return 0.0
+
+    n_chars = len(thinking_text)
+
+    # Length component: soft window [50, 2000] chars.
+    if n_chars < 20:
+        length_score = 0.1
+    elif n_chars < 50:
+        length_score = 0.3 + 0.7 * (n_chars - 20) / 30
+    elif n_chars <= 2000:
+        length_score = 1.0
+    elif n_chars <= 4000:
+        length_score = 1.0 - 0.4 * (n_chars - 2000) / 2000
+    else:
+        length_score = 0.4
+
+    repetition = _char_ngram_repetition(thinking_text)
+    repetition_score = max(1.0 - 2.0 * repetition, 0.0)
+
+    return 0.5 * length_score + 0.5 * repetition_score
+
+
+_RELEVANCE_PATTERNS: list[re.Pattern] = [
+    re.compile(
+        r"(user|preference|interest|history|behavior|browsing|viewing|click"
+        r"|用户|偏好|兴趣|历史|行为|浏览|观看|点击)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(item|product|video|content|recommend|candidate"
+        r"|商品|产品|视频|内容|推荐|候选)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(match|relevant|similar|suitable|fit|correlat"
+        r"|匹配|相关|类似|合适|契合|关联)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(divers|novel|explor|popular|trend|categor"
+        r"|多样|新颖|探索|热门|趋势|类别|分类)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(compar|prefer|rank|better|reason|because|therefore|consider|analy"
+        r"|比较|优先|排序|更好|原因|因为|因此|所以|考虑|分析)",
+        re.IGNORECASE,
+    ),
+]
+
+
+def thinking_relevance_reward(thinking_text: str) -> float:
+    """Check whether the thinking contains recommendation-relevant reasoning.
+
+    Each matched pattern family contributes 0.2; the score is capped at 1.0.
+    """
+    if not thinking_text:
+        return 0.0
+    score = sum(0.2 for pat in _RELEVANCE_PATTERNS if pat.search(thinking_text))
+    return min(score, 1.0)
+
+
+def thinking_specificity_reward(thinking_text: str) -> float:
+    """Reward concrete, grounded reasoning over vague filler.
+
+    Looks for item-ID references, numeric details, and non-trivial length.
+    """
+    if not thinking_text:
+        return 0.0
+
+    score = 0.0
+    if SLOT_PATTERN.search(thinking_text):
+        score += 0.4
+    if len(re.findall(r"\b\d{2,}\b", thinking_text)) >= 2:
+        score += 0.3
+    if len(thinking_text) > 80:
+        score += 0.3
+    return min(score, 1.0)
+
+
+def thinking_faithfulness_reward(thinking_text: str, items_text: str) -> float:
+    """Jaccard overlap of item IDs between reasoning and final predictions.
+
+    Returns 0.5 (neutral) when no item IDs appear in the thinking to avoid
+    penalising free-form reasoning that doesn't cite specific IDs.
+    """
+    if not thinking_text or not items_text:
+        return 0.0
+
+    thinking_items = set(SLOT_PATTERN.findall(thinking_text))
+    predicted_items = set(SLOT_PATTERN.findall(items_text))
+
+    if not thinking_items:
+        return 0.5  # neutral — reasoning is fine without citing IDs
+
+    if not predicted_items:
+        return 0.0
+
+    union = len(thinking_items | predicted_items)
+    return len(thinking_items & predicted_items) / union if union else 0.0
+
+
+def thinking_quality_reward(
+    prediction: str,
+    ground_truth: str,
+    thinking_reward_weight: float = 0.3,
+) -> dict[str, float]:
+    """Composite thinking-quality reward with Trust-GRPO weighting.
+
+    The final ``score`` mixes outcome and thinking quality:
+
+        score = (1 - w) * outcome + w * thinking_quality * trust_weight
+
+    where *trust_weight* is 1.0 when the outcome is correct and 0.5 otherwise,
+    following SophiaVL-R1's mechanism for discounting unreliable thinking
+    signals.
+
+    Args:
+        prediction: Full model output including ``<think>…</think>`` + items.
+        ground_truth: Ground-truth text with expected item IDs.
+        thinking_reward_weight: Mixing coefficient *w* (0 disables thinking).
+
+    Returns:
+        Dict of sub-scores plus the blended ``score``.
+    """
+    thinking_text = _extract_thinking(prediction)
+    items_text = _extract_items_text(prediction)
+
+    coherence = thinking_coherence_reward(thinking_text)
+    relevance = thinking_relevance_reward(thinking_text)
+    specificity = thinking_specificity_reward(thinking_text)
+    faithfulness = thinking_faithfulness_reward(thinking_text, items_text)
+
+    raw_thinking = (
+        0.30 * coherence
+        + 0.30 * relevance
+        + 0.20 * specificity
+        + 0.20 * faithfulness
+    )
+
+    outcome = first_sid_hit_reward(prediction, ground_truth)
+
+    # Trust-GRPO: discount thinking reward when outcome is wrong.
+    trust_weight = 1.0 if outcome > 0 else 0.5
+    thinking_score = raw_thinking * trust_weight
+
+    blended = (1.0 - thinking_reward_weight) * outcome + thinking_reward_weight * thinking_score
+
+    return {
+        "score": blended,
+        "outcome_reward": outcome,
+        "thinking_quality": thinking_score,
+        "thinking_coherence": coherence,
+        "thinking_relevance": relevance,
+        "thinking_specificity": specificity,
+        "thinking_faithfulness": faithfulness,
+        "thinking_trust_weight": trust_weight,
+    }
+
 
 def _extract_all_tuples(text: Any) -> list[tuple[str, str, str]]:
     if not isinstance(text, str):
@@ -554,6 +769,8 @@ def compute_score(
     solution_str: str,
     ground_truth: str,
     extra_info: dict[str, Any],  # noqa: ARG001
+    enable_thinking_reward: bool = False,
+    thinking_reward_weight: float = 0.3,
 ) -> dict[str, float]:
     """Compute reward scores for recommendation results.
 
@@ -562,10 +779,22 @@ def compute_score(
         solution_str: Model generated prediction text.
         ground_truth: Ground truth text.
         extra_info: Extra information (kept for API compatibility).
+        enable_thinking_reward: When True, blend thinking-quality reward into
+            the main ``score`` using Trust-GRPO weighting.  Passed via
+            ``custom_reward_function.reward_kwargs.enable_thinking_reward``.
+        thinking_reward_weight: Mixing coefficient *w* in
+            ``score = (1-w)*outcome + w*thinking_quality``.  Only effective
+            when *enable_thinking_reward* is True.  Passed via
+            ``custom_reward_function.reward_kwargs.thinking_reward_weight``.
 
     Returns:
         Dictionary containing various reward scores.
     """
+    # Hydra may pass strings from env-var overrides; coerce to correct types.
+    if isinstance(enable_thinking_reward, str):
+        enable_thinking_reward = enable_thinking_reward.lower() in ("true", "1", "yes")
+    thinking_reward_weight = float(thinking_reward_weight)
+
     prediction = solution_str
     format_reward_value = think_format_reward(prediction)
     partial_hit_reward_value = partial_hit_reward(prediction, ground_truth)
@@ -573,11 +802,18 @@ def compute_score(
     pass_rate_value = pass_rate(prediction, ground_truth)
     pass_at_1_value = first_sid_hit_reward(prediction, ground_truth)
 
-    return {
-        "score": pass_at_1_value,
+    result: dict[str, float] = {
         "format_reward": format_reward_value,
         "partial_hit_reward": partial_hit_reward_value,
         "hit_reward": hit_reward_value,
         "pass_rate": pass_rate_value,
         "pass_at_1": pass_at_1_value,
     }
+
+    if enable_thinking_reward:
+        tq = thinking_quality_reward(prediction, ground_truth, thinking_reward_weight)
+        result.update(tq)  # includes blended "score" + all sub-scores
+    else:
+        result["score"] = pass_at_1_value
+
+    return result
