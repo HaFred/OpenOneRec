@@ -27,10 +27,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Model Configuration
 # ============================================================================
 export BASE_MODEL=${BASE_MODEL:-"/path/to/your/model"}
+export EXPECTED_MODEL_ARCH=${EXPECTED_MODEL_ARCH:-"Qwen3ForCausalLM"}
 export TP_SIZE=${TP_SIZE:-2}
 export PP_SIZE=${PP_SIZE:-2}
 export CP_SIZE=${CP_SIZE:-1}
 export EP_SIZE=${EP_SIZE:-1}
+export MEGATRON_USE_MBRIDGE=${MEGATRON_USE_MBRIDGE:-True}
+export TRUST_REMOTE_CODE=${TRUST_REMOTE_CODE:-False}
+export EXTERNAL_LIB=${EXTERNAL_LIB:-null}
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-$TP_SIZE}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
@@ -115,11 +119,16 @@ echo "Enable NonThink: $ENABLE_NONTHINK"
 echo "==================================="
 
 # ============================================================================
+# Pre-flight: validate model architecture for Megatron mcore
+# ============================================================================
+python3 -u -m recipe.onerec.megatron_mcore_support \
+    --model-path "$BASE_MODEL" \
+    --expected-arch "$EXPECTED_MODEL_ARCH"
+
+# ============================================================================
 # Launch Training
 # ============================================================================
 mkdir -p logs
-
-# conda activate verl
 
 python3 -u -m recipe.onerec.main_onerec_ppo \
     --config-name ppo_megatron_trainer \
@@ -167,6 +176,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
     actor_rollout_ref.rollout.name=two_stage \
     ++actor_rollout_ref.rollout.backend=vllm \
+    actor_rollout_ref.rollout.mode=sync \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     ++actor_rollout_ref.rollout.max_length=$RESPONSE_LENGTH \
     ++actor_rollout_ref.rollout.stage1_max_tokens=$STAGE1_MAX_TOKENS \
@@ -195,7 +205,9 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     actor_rollout_ref.ref.strategy=megatron \
     critic.strategy=megatron \
     reward_model.strategy=megatron \
-    ++actor_rollout_ref.actor.megatron.use_mbridge=True \
+    ++actor_rollout_ref.model.trust_remote_code=$TRUST_REMOTE_CODE \
+    ++actor_rollout_ref.model.external_lib=$EXTERNAL_LIB \
+    ++actor_rollout_ref.actor.megatron.use_mbridge=$MEGATRON_USE_MBRIDGE \
     ++actor_rollout_ref.actor.megatron.tensor_model_parallel_size=$TP_SIZE \
     ++actor_rollout_ref.actor.megatron.pipeline_model_parallel_size=$PP_SIZE \
     ++actor_rollout_ref.actor.megatron.context_parallel_size=$CP_SIZE \
@@ -204,6 +216,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     ++actor_rollout_ref.ref.megatron.pipeline_model_parallel_size=$PP_SIZE \
     ++actor_rollout_ref.ref.megatron.context_parallel_size=$CP_SIZE \
     ++actor_rollout_ref.ref.megatron.expert_model_parallel_size=$EP_SIZE \
+    ++actor_rollout_ref.ref.megatron.use_mbridge=$MEGATRON_USE_MBRIDGE \
     ++critic.enable=False \
     ++actor_rollout_ref.actor.megatron.sequence_parallel=True \
     ++actor_rollout_ref.ref.megatron.sequence_parallel=True \
