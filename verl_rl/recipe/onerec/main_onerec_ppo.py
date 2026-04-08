@@ -36,7 +36,7 @@ from verl.trainer.main_ppo import TaskRunner as BaseTaskRunner, create_rl_datase
 from verl.utils.device import is_cuda_available
 
 
-@hydra.main(config_path="../../verl/trainer/config", config_name="ppo_trainer", version_base=None)
+@hydra.main(config_path="../../verl/trainer/config", config_name="onerec_grpo_megatron", version_base=None)
 def main(config):
     """Main entry point for OneRec PPO training with Hydra configuration management.
 
@@ -72,6 +72,8 @@ def run_ppo(config) -> None:
         runner = OneRecTaskRunner.options(runtime_env={"nsight": nsight_options}).remote()
     else:
         runner = OneRecTaskRunner.remote()
+    # Plain dict tree only: avoids pickling Hydra-internal node types into Ray workers.
+    config = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
     ray.get(runner.run.remote(config))
 
     # Optional: get the path of the timeline trace file from the configuration
