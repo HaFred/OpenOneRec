@@ -14,7 +14,12 @@
 # limitations under the License.
 
 import torch
-from megatron.core import parallel_state as mpu
+
+from verl.utils.megatron_mcore_compat import ensure_megatron_parallel_state_optional_apis
+
+# TE / newer mcore may call parallel_state.is_inside_encoder before other entrypoints run.
+ensure_megatron_parallel_state_optional_apis()
+from megatron.core import parallel_state
 from megatron.core.packed_seq_params import PackedSeqParams
 
 from verl.utils.model import CausalLMOutputForPPO
@@ -32,9 +37,9 @@ def preprocess_packed_seqs(
     batch_size = input_ids.shape[0]
 
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
-    tp_size = mpu.get_tensor_model_parallel_world_size()
-    cp_size = mpu.get_context_parallel_world_size()
-    cp_rank = mpu.get_context_parallel_rank()
+    tp_size = parallel_state.get_tensor_model_parallel_world_size()
+    cp_size = parallel_state.get_context_parallel_world_size()
+    cp_rank = parallel_state.get_context_parallel_rank()
     align_size = tp_size * cp_size * 2 if cp_size > 1 else tp_size
 
     pad_size = (align_size - seqlens_in_batch % align_size) % align_size
@@ -103,14 +108,14 @@ def postprocess_packed_seqs(
     shape = [batch_size, seq_len] + list(output.shape[2:])  # 1,packed, dim -> batch_size, seq_len, dim
     output_new = torch.zeros(shape, dtype=output.dtype, device=output.device)
 
-    cp_size = mpu.get_context_parallel_world_size()
+    cp_size = parallel_state.get_context_parallel_world_size()
     # all gather output across context parallel group
     if cp_size > 1:
         # output shape: [1, packed_len, hidden_dim]
         # need to gather across cp group and concatenate in sequence dimension
         output_list = [torch.empty_like(output) for _ in range(cp_size)]
-        torch.distributed.all_gather(output_list, output.detach(), group=mpu.get_context_parallel_group())
-        output_list[mpu.get_context_parallel_rank()] = output
+        torch.distributed.all_gather(output_list, output.detach(), group=parallel_state.get_context_parallel_group())
+        output_list[parallel_state.get_context_parallel_rank()] = output
     else:
         output_list = [output]
     for i in range(batch_size):
@@ -155,14 +160,14 @@ def remove_left_padding(
     """
     assert attention_mask.ndim == 2
     assert position_ids.ndim == 2
-    cp_size = mpu.get_context_parallel_world_size()
+    cp_size = parallel_state.get_context_parallel_world_size()
     assert cp_size == 1, "Context parallel size without seq_pack is not supported"
     batch_size = input_ids.shape[0]
     shape = list(input_ids.shape)  # batch_size, seq_len,...
     seq_lens = attention_mask.sum(dim=1)
     seq_len = seq_lens.max().item()
     if sequence_parallel:
-        sp_world_size = mpu.get_tensor_model_parallel_world_size()
+        sp_world_size = parallel_state.get_tensor_model_parallel_world_size()
         pad_size = (sp_world_size - seq_len % sp_world_size) % sp_world_size
         seq_len = seq_len + pad_size
     shape[1] = seq_len

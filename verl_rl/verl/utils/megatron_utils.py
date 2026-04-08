@@ -23,13 +23,13 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+
+from verl.utils.megatron_mcore_compat import ensure_megatron_mcore_runtime_compat
+
+ensure_megatron_mcore_runtime_compat()
 from megatron.core import ModelParallelConfig, mpu, tensor_parallel
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import DistributedDataParallelConfig
-
-from verl.models.mcore.megatron_model_type_compat import ensure_megatron_model_type_encoder_decoder_alias
-
-ensure_megatron_model_type_encoder_decoder_alias()
 from megatron.core.enums import ModelType
 from megatron.core.optimizer import ChainedOptimizer, OptimizerConfig
 from megatron.core.transformer import TransformerConfig

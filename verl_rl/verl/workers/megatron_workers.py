@@ -25,6 +25,10 @@ import psutil
 import torch
 import torch.distributed
 from codetiming import Timer
+
+from verl.utils.megatron_mcore_compat import ensure_megatron_mcore_runtime_compat
+
+ensure_megatron_mcore_runtime_compat()
 from megatron.core import parallel_state as mpu
 from omegaconf import DictConfig, OmegaConf, open_dict
 
