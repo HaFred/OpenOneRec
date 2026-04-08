@@ -18,6 +18,7 @@ import importlib
 import sys
 from collections.abc import Callable
 from types import ModuleType
+from typing import Any
 
 
 def _patch_model_type_on_module(mod: ModuleType) -> bool:
@@ -55,27 +56,28 @@ def ensure_megatron_model_type_encoder_decoder_alias() -> None:
         _patch_model_type_on_module(mb)
 
 
-def _parallel_state_optional_callables() -> list[tuple[str, Callable[[], Callable]]]:
-    """(attribute_name, factory) where factory() returns the no-arg function to bind."""
+def _parallel_state_optional_callables() -> list[tuple[str, Callable[[], Callable[..., Any]]]]:
+    """(attribute_name, factory) where factory() returns the function to bind on parallel_state."""
 
-    def is_inside_encoder() -> bool:
+    # mbridge get_model/build_model calls e.g. is_inside_encoder(pipeline_rank); Megatron may pass
+    # other optional args. Accept *args, **kwargs so stubs match both call styles.
+
+    def is_inside_encoder(*_args: Any, **_kwargs: Any) -> bool:
         return False
 
-    def get_pipeline_model_parallel_decoder_start() -> int:
+    def get_pipeline_model_parallel_decoder_start(*_args: Any, **_kwargs: Any) -> int:
         return 0
 
-    def get_pipeline_model_parallel_split_rank():
+    def get_pipeline_model_parallel_split_rank(*_args: Any, **_kwargs: Any):
         return None
 
-    def is_pipeline_stage_before_split() -> bool:
-        # No encoder-only pipeline region (decoder-only / standard GPT).
+    def is_pipeline_stage_before_split(*_args: Any, **_kwargs: Any) -> bool:
         return False
 
-    def is_pipeline_stage_after_split() -> bool:
-        # Whole transformer stack treated as decoder side for stub purposes.
+    def is_pipeline_stage_after_split(*_args: Any, **_kwargs: Any) -> bool:
         return True
 
-    def get_pipeline_model_parallel_encoder_end() -> int:
+    def get_pipeline_model_parallel_encoder_end(*_args: Any, **_kwargs: Any) -> int:
         return 0
 
     return [
@@ -89,14 +91,24 @@ def _parallel_state_optional_callables() -> list[tuple[str, Callable[[], Callabl
 
 
 def ensure_megatron_parallel_state_optional_apis() -> None:
-    """Idempotent: add parallel_state APIs expected by newer TE/mcore/verl when missing."""
+    """Add parallel_state APIs expected by mbridge / TE when missing on older Megatron-LM.
+
+    If a previous verl run installed an outdated shim (e.g. wrong arity), replace it when the
+    bound function lives in this compat module; never override real megatron.core.parallel_state.
+    """
     try:
         import megatron.core.parallel_state as ps
     except ImportError:
         return
 
+    this_pkg = __name__
+
     for attr, factory in _parallel_state_optional_callables():
-        if not hasattr(ps, attr):
+        cur = getattr(ps, attr, None)
+        cur_mod = getattr(cur, "__module__", "") or ""
+        if cur is not None and cur_mod.startswith("megatron.core.parallel_state"):
+            continue
+        if cur is None or cur_mod == this_pkg or this_pkg in cur_mod:
             setattr(ps, attr, factory())
 
 
