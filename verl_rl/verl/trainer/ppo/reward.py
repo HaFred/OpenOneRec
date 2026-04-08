@@ -17,6 +17,7 @@ import os
 from functools import partial
 
 import ray
+from omegaconf import OmegaConf
 
 from verl import DataProto
 from verl.utils.reward_score import default_compute_score
@@ -76,7 +77,11 @@ def get_custom_reward_fn(config):
     print(f"using customized reward function '{function_name}' from '{file_path}'")
     raw_fn = getattr(module, function_name)
 
-    reward_kwargs = dict(reward_fn_config.get("reward_kwargs", {}))
+    rk = reward_fn_config.get("reward_kwargs", {}) or {}
+    if OmegaConf.is_config(rk):
+        reward_kwargs = OmegaConf.to_container(rk, resolve=True)
+    else:
+        reward_kwargs = dict(rk)
 
     return partial(_call_with_kwargs, raw_fn, reward_kwargs)
 

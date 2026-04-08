@@ -123,11 +123,25 @@ echo "Thinking Reward: $ENABLE_THINKING_REWARD (weight=$THINKING_REWARD_WEIGHT)"
 echo "==================================="
 
 # ============================================================================
-# Pre-flight: validate model architecture for Megatron mcore
+# Pre-flight: validate model architecture for Megatron mcore (optional)
+# Module path must be recipe.onerec.* (there is no package validate_onerec).
+# Set SKIP_MCORE_PREFLIGHT=1 to skip.
 # ============================================================================
-python3 -u -m recipe.validate_onerec.megatron_mcore_support \
-    --model-path "$BASE_MODEL" \
-    --expected-arch "$EXPECTED_MODEL_ARCH"
+if [ "${SKIP_MCORE_PREFLIGHT:-0}" != "1" ]; then
+    python3 -u -m recipe.onerec.validate_megatron_mcore_support \
+        --model-path "$BASE_MODEL" \
+        --expected-arch "$EXPECTED_MODEL_ARCH"
+fi
+
+# Extra Hydra overrides only when thinking-quality reward is enabled (keeps
+# config tree identical to the stable script when this feature is off).
+THINK_REWARD_HYDRA=()
+case "$(printf '%s' "$ENABLE_THINKING_REWARD" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes)
+        THINK_REWARD_HYDRA+=(++custom_reward_function.reward_kwargs.enable_thinking_reward=True)
+        THINK_REWARD_HYDRA+=(++custom_reward_function.reward_kwargs.thinking_reward_weight="$THINKING_REWARD_WEIGHT")
+        ;;
+esac
 
 # ============================================================================
 # Launch Training
@@ -151,19 +165,18 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     data.truncation='error' \
     data.custom_cls.path=$SCRIPT_DIR/onerec_recipe.py \
     data.custom_cls.name=OneRecDataset \
-    data.reward_fn_key='source' \
-    ++data.data_source_key='source' \
-    ++actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
-    ++actor_rollout_ref.actor.entropy_checkpointing=True \
+    data.reward_fn_key=$OPENIF_PRODUCT_PARQUET_SOURCE \
+    ++data.data_source_key=$OPENIF_PRODUCT_PARQUET_SOURCE \
+    actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
+    actor_rollout_ref.actor.entropy_checkpointing=True \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.calculate_log_probs=False \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
-    ++actor_rollout_ref.model.enable_activation_offload=True \
-    ++actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.model.enable_activation_offload=True \
+    actor_rollout_ref.model.use_remove_padding=True \
     custom_reward_function.path=$SCRIPT_DIR/onerec_recipe.py \
     custom_reward_function.name=compute_score \
-    ++custom_reward_function.reward_kwargs.enable_thinking_reward=$ENABLE_THINKING_REWARD \
-    ++custom_reward_function.reward_kwargs.thinking_reward_weight=$THINKING_REWARD_WEIGHT \
+    "${THINK_REWARD_HYDRA[@]}" \
     actor_rollout_ref.actor.use_dynamic_bsz=$USE_DYNAMIC_BSZ \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_PER_GPU \
@@ -176,13 +189,12 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
     actor_rollout_ref.model.path=$BASE_MODEL \
-    ++actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.rollout.n=$ROLLOUT_N \
     actor_rollout_ref.rollout.dtype=bfloat16 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP_SIZE \
     actor_rollout_ref.rollout.name=two_stage \
     ++actor_rollout_ref.rollout.backend=vllm \
-    actor_rollout_ref.rollout.mode=sync \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     ++actor_rollout_ref.rollout.max_length=$RESPONSE_LENGTH \
     ++actor_rollout_ref.rollout.stage1_max_tokens=$STAGE1_MAX_TOKENS \

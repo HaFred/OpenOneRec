@@ -23,55 +23,6 @@ logger = logging.getLogger(__name__)
 __all__ = ["collate_fn", "OneRecDataset", "compute_score", "thinking_quality_reward"]
 
 
-def _extract_prompt_fields_row(
-    row: dict[str, Any],
-    prompt_key: str,
-    enable_think: bool,
-    enable_nonthink: bool,
-) -> dict[str, Any]:
-    """Pickle-safe preprocessing function for datasets.map(num_proc>1)."""
-    raw_messages = row.get("messages")
-    if isinstance(raw_messages, str):
-        messages = ast.literal_eval(raw_messages)
-    else:
-        messages = raw_messages or []
-
-    clean_chats = [
-        {
-            "role": message.get("role"),
-            "content": "".join(
-                segment.get("text", "")
-                for segment in message.get("content", [])
-                if segment.get("type") == "text"
-            ),
-        }
-        for message in messages
-    ]
-
-    if not clean_chats:
-        raise ValueError("Sample has empty messages; please check data integrity.")
-
-    prompt_messages = clean_chats[:-1]
-    if enable_think:
-        for message in prompt_messages:
-            if message["role"] == "user":
-                message["content"] = message["content"] + "/think"
-    if enable_nonthink:
-        for message in prompt_messages:
-            if message["role"] == "user":
-                message["content"] = message["content"] + "/no_think"
-
-    ground_truth_message = clean_chats[-1]["content"]
-    reward_payload = {
-        "ground_truth": ground_truth_message,
-        "style": "rule",
-    }
-
-    row[prompt_key] = prompt_messages
-    row["reward_model"] = reward_payload
-    return row
-
-
 def collate_fn(samples: list[dict[str, Any]]) -> dict[str, Any]:
     tensors: dict[str, list[torch.Tensor]] = defaultdict(list)
     non_tensors: dict[str, list[Any]] = defaultdict(list)
@@ -126,18 +77,15 @@ class OneRecDataset(Dataset):
         self.return_multi_modal_inputs = config.get("return_multi_modal_inputs", True)
         self.enable_think = config.get("enable_think", True)
         self.enable_nonthink = config.get("enable_nonthink", False)
+        self.shuffle = config.get("shuffle", True)
+        self.seed = config.get("seed", None)
 
         self.use_force_prefix = config.get("use_force_prefix", False)
         self._FORCE_PREFIX_CONTENT = "<think>\n</think><|sid_begin|>"
 
         if self.enable_think and self.enable_nonthink:
-            raise ValueError("enable_think and enable_nonthink cannot be both True") 
+            raise ValueError("enable_think and enable_nonthink cannot be both True")
 
-        # Keep preprocessing robust by default. Large process counts can trigger
-        # pickling issues depending on runtime objects and Hydra wrappers.
-        cpu_count = os.cpu_count() or 1
-        configured_workers = int(config.get("preprocess_num_workers", 1))
-        self.num_workers = min(max(configured_workers, 1), cpu_count)
         self.use_shm = config.get("use_shm", False)
         self.serialize_dataset = False
 
@@ -175,18 +123,57 @@ class OneRecDataset(Dataset):
             print(f"selected {self.max_samples} random samples out of {len(self.dataframe)}")
 
         self.dataframe = self.dataframe.map(
-            _extract_prompt_fields_row,
-            fn_kwargs={
-                "prompt_key": self.prompt_key,
-                "enable_think": self.enable_think,
-                "enable_nonthink": self.enable_nonthink,
-            },
-            num_proc=self.num_workers,
+            self._extract_prompt_fields,
+            num_proc=1,  # safer for megatron
             desc="Extract prompts and reward annotations",
         )
 
         logger.info("processed dataset len: %s", len(self.dataframe))
         self.dataframe = self.maybe_filter_out_long_prompts(self.dataframe)
+
+    def _extract_prompt_fields(self, row: dict[str, Any]) -> dict[str, Any]:
+        raw_messages = row.get("messages")
+        if isinstance(raw_messages, str):
+            messages = ast.literal_eval(raw_messages)
+        else:
+            messages = raw_messages or []
+
+        clean_chats = [
+            {
+                "role": message.get("role"),
+                "content": "".join(
+                    segment.get("text", "")
+                    for segment in message.get("content", [])
+                    if segment.get("type") == "text"
+                ),
+            }
+            for message in messages
+        ]
+
+        if not clean_chats:
+            raise ValueError("Sample has empty messages; please check data integrity.")
+
+        prompt_messages = clean_chats[:-1]
+
+        if self.enable_think:
+            for message in prompt_messages:
+                if message["role"] == "user":
+                    message["content"] = message["content"] + "/think"
+        if self.enable_nonthink:
+            for message in prompt_messages:
+                if message["role"] == "user":
+                    message["content"] = message["content"] + "/no_think"
+
+        ground_truth_message = clean_chats[-1]["content"]
+
+        reward_payload = {
+            "ground_truth": ground_truth_message,
+            "style": "rule",
+        }
+
+        row[self.prompt_key] = prompt_messages
+        row["reward_model"] = reward_payload
+        return row
 
     def maybe_filter_out_long_prompts(self, dataframe: datasets.Dataset) -> datasets.Dataset:
         if not self.filter_overlong_prompts:
@@ -217,7 +204,7 @@ class OneRecDataset(Dataset):
 
         filtered = dataframe.filter(
             lambda doc: doc_length(doc) <= self.max_prompt_length - 10,
-            num_proc=self.num_workers,
+            num_proc=1,
             desc=f"Filtering prompts longer than {self.max_prompt_length - 10} tokens",
         )
 
