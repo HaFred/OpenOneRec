@@ -167,8 +167,8 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     data.custom_cls.name=OneRecDataset \
     data.reward_fn_key=$OPENIF_PRODUCT_PARQUET_SOURCE \
     ++data.data_source_key=$OPENIF_PRODUCT_PARQUET_SOURCE \
-    actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
-    actor_rollout_ref.actor.entropy_checkpointing=True \
+    ++actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
+    ++actor_rollout_ref.actor.entropy_checkpointing=True \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.calculate_log_probs=False \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
