@@ -14,6 +14,9 @@
 # limitations under the License.
 
 try:
+    from verl.utils.megatron_mcore_compat import ensure_megatron_mcore_runtime_compat
+
+    ensure_megatron_mcore_runtime_compat()
     from mbridge import AutoBridge
     from mbridge.utils.post_creation_callbacks import freeze_moe_router, make_value_model
 except ImportError:

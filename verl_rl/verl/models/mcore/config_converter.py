@@ -16,6 +16,9 @@
 
 # convert huggingface config to mcore transformer config
 
+from verl.utils.megatron_mcore_compat import ensure_megatron_mcore_runtime_compat
+
+ensure_megatron_mcore_runtime_compat()
 
 import warnings
 

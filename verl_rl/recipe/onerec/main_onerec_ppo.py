@@ -25,7 +25,7 @@ if project_root not in sys.path:
 
 import hydra
 import ray
-from omegaconf import OmegaConf
+from omegaconf import MISSING, OmegaConf
 
 # Import the custom trainer from onerec_ray_trainer.py
 from recipe.onerec.onerec_ray_trainer import RayPPOTrainer
@@ -34,6 +34,75 @@ from recipe.onerec.onerec_ray_trainer import RayPPOTrainer
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.trainer.main_ppo import TaskRunner as BaseTaskRunner, create_rl_dataset, create_rl_sampler
 from verl.utils.device import is_cuda_available
+
+# Fields in onerec_grpo_megatron.yaml that use ${oc.env:...} resolve to strings; downstream
+# code (e.g. onerec_ray_trainer._validate_config) expects numeric types for arithmetic / comparisons.
+_ONEREC_GRPO_INT_PATHS = (
+    "data.max_prompt_length",
+    "data.max_response_length",
+    "data.train_batch_size",
+    "actor_rollout_ref.ref.log_prob_max_token_len_per_gpu",
+    "actor_rollout_ref.ref.megatron.tensor_model_parallel_size",
+    "actor_rollout_ref.ref.megatron.pipeline_model_parallel_size",
+    "actor_rollout_ref.ref.megatron.context_parallel_size",
+    "actor_rollout_ref.ref.megatron.expert_model_parallel_size",
+    "actor_rollout_ref.actor.ppo_max_token_len_per_gpu",
+    "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu",
+    "actor_rollout_ref.actor.ppo_mini_batch_size",
+    "actor_rollout_ref.actor.optim.lr_warmup_steps",
+    "actor_rollout_ref.actor.megatron.tensor_model_parallel_size",
+    "actor_rollout_ref.actor.megatron.pipeline_model_parallel_size",
+    "actor_rollout_ref.actor.megatron.context_parallel_size",
+    "actor_rollout_ref.actor.megatron.expert_model_parallel_size",
+    "actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu",
+    "actor_rollout_ref.rollout.max_num_batched_tokens",
+    "actor_rollout_ref.rollout.max_num_seqs",
+    "actor_rollout_ref.rollout.n",
+    "actor_rollout_ref.rollout.tensor_model_parallel_size",
+    "actor_rollout_ref.rollout.max_length",
+    "actor_rollout_ref.rollout.stage1_max_tokens",
+    "actor_rollout_ref.rollout.stage2_num_tokens",
+    "actor_rollout_ref.rollout.stage2_beam_size",
+    "actor_rollout_ref.rollout.engine_kwargs.vllm.max_logprobs",
+    "trainer.n_gpus_per_node",
+    "trainer.nnodes",
+    "trainer.save_freq",
+    "trainer.test_freq",
+    "trainer.total_epochs",
+)
+
+_ONEREC_GRPO_FLOAT_PATHS = (
+    "actor_rollout_ref.actor.kl_loss_coef",
+    "actor_rollout_ref.actor.optim.lr",
+    "actor_rollout_ref.rollout.temperature",
+    "actor_rollout_ref.rollout.top_p",
+    "actor_rollout_ref.rollout.gpu_memory_utilization",
+    "custom_reward_function.reward_kwargs.thinking_reward_weight",
+)
+
+
+def _coerce_onerec_grpo_config_types(cfg) -> None:
+    """Coerce string env interpolations to int/float where onerec_grpo_megatron.yaml uses oc.env."""
+
+    def _coerce_path(path: str, cast, kind: str) -> None:
+        v = OmegaConf.select(cfg, path, default=MISSING)
+        if v is MISSING or v is None:
+            return
+        if isinstance(v, bool):
+            return
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return
+            try:
+                OmegaConf.update(cfg, path, cast(s), merge=True)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Invalid {kind} for config key {path!r}: {v!r}") from e
+
+    for p in _ONEREC_GRPO_INT_PATHS:
+        _coerce_path(p, lambda s: int(float(s)), "int")
+    for p in _ONEREC_GRPO_FLOAT_PATHS:
+        _coerce_path(p, float, "float")
 
 
 @hydra.main(config_path="../../verl/trainer/config", config_name="onerec_grpo_megatron", version_base=None)
@@ -74,6 +143,7 @@ def run_ppo(config) -> None:
         runner = OneRecTaskRunner.remote()
     # Plain dict tree only: avoids pickling Hydra-internal node types into Ray workers.
     config = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
+    _coerce_onerec_grpo_config_types(config)
     ray.get(runner.run.remote(config))
 
     # Optional: get the path of the timeline trace file from the configuration
