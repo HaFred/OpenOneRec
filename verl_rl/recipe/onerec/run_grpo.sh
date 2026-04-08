@@ -32,9 +32,6 @@ export TP_SIZE=${TP_SIZE:-2}
 export PP_SIZE=${PP_SIZE:-2}
 export CP_SIZE=${CP_SIZE:-1}
 export EP_SIZE=${EP_SIZE:-1}
-export MEGATRON_USE_MBRIDGE=${MEGATRON_USE_MBRIDGE:-True}
-export TRUST_REMOTE_CODE=${TRUST_REMOTE_CODE:-False}
-export EXTERNAL_LIB=${EXTERNAL_LIB:-null}
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-$TP_SIZE}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
@@ -214,9 +211,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     actor_rollout_ref.ref.strategy=megatron \
     critic.strategy=megatron \
     reward_model.strategy=megatron \
-    ++actor_rollout_ref.model.trust_remote_code=$TRUST_REMOTE_CODE \
-    ++actor_rollout_ref.model.external_lib=$EXTERNAL_LIB \
-    ++actor_rollout_ref.actor.megatron.use_mbridge=$MEGATRON_USE_MBRIDGE \
+    ++actor_rollout_ref.actor.megatron.use_mbridge=True \
     ++actor_rollout_ref.actor.megatron.tensor_model_parallel_size=$TP_SIZE \
     ++actor_rollout_ref.actor.megatron.pipeline_model_parallel_size=$PP_SIZE \
     ++actor_rollout_ref.actor.megatron.context_parallel_size=$CP_SIZE \
@@ -225,7 +220,6 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     ++actor_rollout_ref.ref.megatron.pipeline_model_parallel_size=$PP_SIZE \
     ++actor_rollout_ref.ref.megatron.context_parallel_size=$CP_SIZE \
     ++actor_rollout_ref.ref.megatron.expert_model_parallel_size=$EP_SIZE \
-    ++actor_rollout_ref.ref.megatron.use_mbridge=$MEGATRON_USE_MBRIDGE \
     ++critic.enable=False \
     ++actor_rollout_ref.actor.megatron.sequence_parallel=True \
     ++actor_rollout_ref.ref.megatron.sequence_parallel=True \
