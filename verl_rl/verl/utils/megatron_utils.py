@@ -26,6 +26,10 @@ import torch.nn.functional as F
 from megatron.core import ModelParallelConfig, mpu, tensor_parallel
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import DistributedDataParallelConfig
+
+from verl.models.mcore.megatron_model_type_compat import ensure_megatron_model_type_encoder_decoder_alias
+
+ensure_megatron_model_type_encoder_decoder_alias()
 from megatron.core.enums import ModelType
 from megatron.core.optimizer import ChainedOptimizer, OptimizerConfig
 from megatron.core.transformer import TransformerConfig

@@ -14,6 +14,9 @@
 # limitations under the License.
 
 try:
+    from verl.models.mcore.megatron_model_type_compat import ensure_megatron_model_type_encoder_decoder_alias
+
+    ensure_megatron_model_type_encoder_decoder_alias()
     from mbridge import AutoBridge
     from mbridge.utils.post_creation_callbacks import freeze_moe_router, make_value_model
 except ImportError:
