@@ -4,10 +4,29 @@
 
 set -e
 
+export HYDRA_FULL_ERROR=1
+
+# fred
+clear
+export CUDA_VISIBLE_DEVICES=2,3,6,7
+# BASE_MODEL=/data/models/fredhong/hf_home/OneRec-8B-pro
+# DATA_DIR=/home/fredhong/vllm_fork_genrec_workspace/fred_fork_openonerec/working_branch_fredfork_openonerec/output/rl_data
+TRAIN_FILES=${TRAIN_FILES:-"[$DATA_DIR/train_1k.parquet]"}
+VAL_FILES=${VAL_FILES:-"[$DATA_DIR/test.parquet]"}
+N_NODES=1
+N_GPUS=2
+ENABLE_THINK=True
+ROLLOUT_TP_SIZE=2
+TP_SIZE=1
+# MAX_TOKENS_PER_GPU=8192
+# TRAIN_BATCH_SIZE=1
+
 # ============================================================================
 # Cluster Configuration (auto-detect from Ray)
 # ============================================================================
 RAY_INFO=$(python -c "import ray; ray.init(address='auto', ignore_reinit_error=True); nodes = [n for n in ray.nodes() if n['Alive']]; gpus=next((int(n.get('Resources',{}).get('GPU',0)) for n in nodes if n.get('Resources',{}).get('GPU',0)>0), 0); print(f'{len(nodes)} {gpus}')" 2>/dev/null)
+
+# echo $RAY_INFO  # OVERLAPPING N NODES/GPUS
 
 export N_NODES=$(echo $RAY_INFO | awk '{print $1}')
 export N_GPUS=$(echo $RAY_INFO | awk '{print $2}')
@@ -22,19 +41,19 @@ fi
 
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Absolute paths for recipe modules (Hydra ${oc.env:ONEREC_RECIPE_PATH,...})
-export ONEREC_RECIPE_PATH="${ONEREC_RECIPE_PATH:-$SCRIPT_DIR/onerec_recipe.py}"
+# ============================================================================
+# Model Configuration
+# ============================================================================
+export TP_SIZE=${TP_SIZE:-1}
+export PP_SIZE=${PP_SIZE:-1}
+export CP_SIZE=${CP_SIZE:-1}
+export EP_SIZE=${EP_SIZE:-1}
 
 # ============================================================================
 # Model Configuration
 # ============================================================================
 export BASE_MODEL=${BASE_MODEL:-"/path/to/your/model"}
-export EXPECTED_MODEL_ARCH=${EXPECTED_MODEL_ARCH:-"Qwen3ForCausalLM"}
-export TP_SIZE=${TP_SIZE:-2}
-export PP_SIZE=${PP_SIZE:-2}
-export CP_SIZE=${CP_SIZE:-1}
-export EP_SIZE=${EP_SIZE:-1}
-export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-$TP_SIZE}
+export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
 # ============================================================================
@@ -49,19 +68,7 @@ export TEMPERATURE=${TEMPERATURE:-1}
 # ============================================================================
 export USE_DYNAMIC_BSZ=${USE_DYNAMIC_BSZ:-True}
 export MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-40960}
-export WORLD_SIZE=$((N_GPUS * N_NODES))
-export MODEL_PARALLEL_SIZE=$((TP_SIZE * PP_SIZE * CP_SIZE * EP_SIZE))
-if [ "$MODEL_PARALLEL_SIZE" -le 0 ]; then
-    echo "Invalid MODEL_PARALLEL_SIZE=$MODEL_PARALLEL_SIZE. Check TP/PP/CP/EP settings."
-    exit 1
-fi
-if [ $((WORLD_SIZE % MODEL_PARALLEL_SIZE)) -ne 0 ]; then
-    echo "Invalid 5D topology: WORLD_SIZE=$WORLD_SIZE is not divisible by TP*PP*CP*EP=$MODEL_PARALLEL_SIZE"
-    exit 1
-fi
-export DP_SIZE=$((WORLD_SIZE / MODEL_PARALLEL_SIZE))
-export TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-$DP_SIZE}
-export PPO_MICRO_BATCH_PER_GPU=${PPO_MICRO_BATCH_PER_GPU:-1}
+export TRAIN_BATCH_SIZE=$((N_GPUS * N_NODES))
 
 # ============================================================================
 # Rollout Configuration
@@ -114,15 +121,14 @@ echo "GRPO Training with Two-Stage Rollout"
 echo "==================================="
 echo "Model: $BASE_MODEL"
 echo "Cluster: $N_NODES nodes x $N_GPUS GPUs"
-echo "5D Parallelism: TP=$TP_SIZE PP=$PP_SIZE CP=$CP_SIZE EP=$EP_SIZE DP=$DP_SIZE"
 echo "Batch Size: $TRAIN_BATCH_SIZE"
 echo "Learning Rate: $LEARNING_RATE"
 echo "Rollout N: $ROLLOUT_N"
 echo "Stage2 Beam Size: $STAGE2_BEAM_SIZE"
 echo "Enable Think: $ENABLE_THINK"
 echo "Enable NonThink: $ENABLE_NONTHINK"
-echo "Thinking Reward: $ENABLE_THINKING_REWARD (weight=$THINKING_REWARD_WEIGHT)"
 echo "==================================="
+
 
 # ============================================================================
 # Pre-flight: validate model architecture for Megatron mcore (optional)
@@ -150,15 +156,99 @@ esac
 # ============================================================================
 mkdir -p logs
 
-cd "$PROJECT_DIR"
-
-# Defaults live in verl/trainer/config/onerec_grpo_megatron.yaml (${oc.env:...} + Hydra compose).
-# Only pass what must come from this shell (parquet lists, think flags, optional thinking reward).
 python3 -u -m recipe.onerec.main_onerec_ppo \
+    --config-name ppo_megatron_trainer \
+    algorithm.adv_estimator=grpo \
     data.train_files=$TRAIN_FILES \
     data.val_files=$VAL_FILES \
+    data.max_prompt_length=10240 \
     ++data.enable_think=$ENABLE_THINK \
     ++data.enable_nonthink=$ENABLE_NONTHINK \
     ++data.use_force_prefix=$USE_FORCE_PREFIX \
+    data.prompt_key='prompt' \
+    data.shuffle=True \
+    data.max_response_length=$RESPONSE_LENGTH \
+    data.train_batch_size=$TRAIN_BATCH_SIZE \
+    data.filter_overlong_prompts=True \
+    data.truncation='error' \
+    data.custom_cls.path=$SCRIPT_DIR/onerec_recipe.py \
+    data.custom_cls.name=OneRecDataset \
+    data.reward_fn_key=$OPENIF_PRODUCT_PARQUET_SOURCE \
+    ++data.data_source_key=$OPENIF_PRODUCT_PARQUET_SOURCE \
+    ++actor_rollout_ref.ref.entropy_from_logits_with_chunking=True \
+    ++actor_rollout_ref.actor.entropy_checkpointing=True \
+    actor_rollout_ref.rollout.enable_chunked_prefill=True \
+    actor_rollout_ref.rollout.calculate_log_probs=False \
+    actor_rollout_ref.actor.clip_ratio_high=0.28 \
+    ++actor_rollout_ref.model.enable_activation_offload=True \
+    ++actor_rollout_ref.model.use_remove_padding=True \
+    custom_reward_function.path=$SCRIPT_DIR/onerec_recipe.py \
+    custom_reward_function.name=compute_score \
     "${THINK_REWARD_HYDRA[@]}" \
+    actor_rollout_ref.actor.use_dynamic_bsz=$USE_DYNAMIC_BSZ \
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_PER_GPU \
+    actor_rollout_ref.actor.ppo_mini_batch_size=$TRAIN_BATCH_SIZE \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
+    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
+    actor_rollout_ref.rollout.max_num_batched_tokens=$MAX_TOKENS_PER_GPU \
+    actor_rollout_ref.rollout.max_num_seqs=2048 \
+    actor_rollout_ref.actor.optim.lr=$LEARNING_RATE \
+    actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
+    actor_rollout_ref.actor.optim.weight_decay=0.1 \
+    actor_rollout_ref.model.path=$BASE_MODEL \
+    ++actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.rollout.n=$((ROLLOUT_N)) \
+    actor_rollout_ref.rollout.dtype=bfloat16 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=$((ROLLOUT_TP_SIZE)) \
+    actor_rollout_ref.rollout.name=two_stage \
+    ++actor_rollout_ref.rollout.backend=vllm \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    ++actor_rollout_ref.rollout.max_length=$((RESPONSE_LENGTH)) \
+    ++actor_rollout_ref.rollout.stage1_max_tokens=$((STAGE1_MAX_TOKENS)) \
+    ++actor_rollout_ref.rollout.stage2_num_tokens=$((STAGE2_NUM_TOKENS)) \
+    ++actor_rollout_ref.rollout.stage2_beam_size=$((STAGE2_BEAM_SIZE)) \
+    ++actor_rollout_ref.rollout.engine_kwargs.vllm.max_logprobs=320 \
+    actor_rollout_ref.rollout.temperature=$TEMPERATURE \
+    actor_rollout_ref.rollout.top_p=1.0 \
+    actor_rollout_ref.rollout.do_sample=True \
+    actor_rollout_ref.actor.use_kl_loss=True \
+    actor_rollout_ref.actor.kl_loss_coef=$KL_LOSS_COEF \
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    algorithm.norm_adv_by_std_in_grpo=True \
+    algorithm.use_kl_in_reward=False \
+    trainer.default_hdfs_dir=null \
+    trainer.n_gpus_per_node=$((N_GPUS))\
+    trainer.nnodes=$((N_NODES)) \
+    trainer.save_freq=10 \
+    +trainer.max_ckpt_to_keep=2 \
+    trainer.test_freq=50 \
+    trainer.project_name=$PROJECT_NAME \
+    trainer.experiment_name=$EXPERIMENT_NAME \
+    trainer.default_local_dir=$OUTPUT_DIR/ckpt \
+    trainer.total_epochs=1 \
+    trainer.val_before_train=True \
+    ++critic.enable=False \
+    ++actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
+    ++actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16 \
+    critic.strategy=megatron \
+    reward_model.strategy=megatron \
+    ++actor_rollout_ref.actor.megatron.tensor_model_parallel_size=$TP_SIZE \
+    ++actor_rollout_ref.actor.megatron.pipeline_model_parallel_size=$PP_SIZE \
+    ++actor_rollout_ref.actor.megatron.context_parallel_size=$CP_SIZE \
+    ++actor_rollout_ref.actor.megatron.expert_model_parallel_size=$EP_SIZE \
+    ++actor_rollout_ref.ref.megatron.tensor_model_parallel_size=$TP_SIZE \
+    ++actor_rollout_ref.ref.megatron.pipeline_model_parallel_size=$PP_SIZE \
+    ++actor_rollout_ref.ref.megatron.context_parallel_size=$CP_SIZE \
+    ++actor_rollout_ref.ref.megatron.expert_model_parallel_size=$EP_SIZE \
+    ++actor_rollout_ref.actor.megatron.use_mbridge=True \
+    ++critic.enable=False \
+    ++actor_rollout_ref.actor.megatron.sequence_parallel=True \
+    ++actor_rollout_ref.ref.megatron.sequence_parallel=True \
     "$@"
+
+
+# actor_rollout_ref.actor.strategy=fsdp2 \
+# actor_rollout_ref.ref.strategy=fsdp2 \
+# critic.strategy=fsdp2 \
