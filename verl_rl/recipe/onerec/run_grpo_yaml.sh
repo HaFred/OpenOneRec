@@ -10,6 +10,14 @@ clear
 export CUDA_VISIBLE_DEVICES=2,3,6,7
 # export CUDA_VISIBLE_DEVICES=4,5
 
+# If you see: ncclUnhandledCudaError / "Failed to CUDA calloc ..." during broadcast_params,
+# that is almost always GPU OOM (or fragmentation): ref model loads first, then actor+DDP
+# in the same colocated worker, then vLLM — peak VRAM is very high.
+# Mitigations: free other jobs on those GPUs (nvidia-smi), lower MAX_TOKENS_PER_GPU /
+# STAGE2_BEAM_SIZE / RESPONSE_LENGTH / rollout gpu_memory_utilization, use TP>1 for huge
+# models, or enable ref CPU offload below.
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+
 export RAY_IGNORE_VERSION_MISMATCH=1
 export HYDRA_FULL_ERROR=1 
 export TRAIN_FILES=${TRAIN_FILES:-"$DATA_DIR/train_1k.parquet"}
@@ -162,6 +170,13 @@ mkdir -p logs
 
 cd "$PROJECT_DIR"
 
+# Optional Hydra overrides (OOM during init_workers / actor_rollout_init_model):
+#   REF_PARAM_OFFLOAD=1 — offload reference weights to CPU after load (less VRAM, slower KL).
+HYDRA_OVERRIDES=()
+if [ "${REF_PARAM_OFFLOAD:-0}" = "1" ]; then
+    HYDRA_OVERRIDES+=(++actor_rollout_ref.ref.megatron.param_offload=true)
+fi
+
 # Defaults live in verl/trainer/config/onerec_grpo_megatron.yaml (${oc.env:...} + Hydra compose).
 # Only pass what must come from this shell (parquet lists, think flags, optional thinking reward).
-python3 -u -m recipe.onerec.main_onerec_ppo
+python3 -u -m recipe.onerec.main_onerec_ppo "${HYDRA_OVERRIDES[@]}"

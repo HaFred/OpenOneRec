@@ -9,6 +9,12 @@ export HYDRA_FULL_ERROR=1
 # fred
 clear
 export CUDA_VISIBLE_DEVICES=2,3,6,7
+
+# If you see: ncclUnhandledCudaError / "Failed to CUDA calloc ..." during broadcast_params,
+# that is almost always GPU OOM (or fragmentation): ref loads first, then actor+DDP in the
+# same colocated worker, then vLLM. Free other jobs (nvidia-smi), lower MAX_TOKENS_PER_GPU /
+# STAGE2_BEAM_SIZE / RESPONSE_LENGTH / rollout gpu_memory_utilization, or set REF_PARAM_OFFLOAD=1.
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 # BASE_MODEL=/data/models/fredhong/hf_home/OneRec-8B-pro
 # DATA_DIR=/home/fredhong/vllm_fork_genrec_workspace/fred_fork_openonerec/working_branch_fredfork_openonerec/output/rl_data
 TRAIN_FILES=${TRAIN_FILES:-"[$DATA_DIR/train_1k.parquet]"}
@@ -151,6 +157,12 @@ case "$(printf '%s' "$ENABLE_THINKING_REWARD" | tr '[:upper:]' '[:lower:]')" in
         ;;
 esac
 
+# Offload reference weights to CPU after load (less VRAM during actor+vLLM init; slower KL).
+REF_OFFLOAD_HYDRA=()
+if [ "${REF_PARAM_OFFLOAD:-0}" = "1" ]; then
+    REF_OFFLOAD_HYDRA+=(++actor_rollout_ref.ref.megatron.param_offload=true)
+fi
+
 # ============================================================================
 # Launch Training
 # ============================================================================
@@ -185,6 +197,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     custom_reward_function.path=$SCRIPT_DIR/onerec_recipe.py \
     custom_reward_function.name=compute_score \
     "${THINK_REWARD_HYDRA[@]}" \
+    "${REF_OFFLOAD_HYDRA[@]}" \
     actor_rollout_ref.actor.use_dynamic_bsz=$USE_DYNAMIC_BSZ \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_PER_GPU \
