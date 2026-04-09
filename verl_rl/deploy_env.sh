@@ -1,15 +1,13 @@
 #!/bin/bash
 # Multi-node Environment Deployment Script
 # Usage: bash deploy_env.sh [--all-nodes]
+# Needs to clean up all ~/.config/pip/pip.conf entires, otherwise failed locally
 
 set -e
+clear
 
 SCRIPT_DIR=$(cd $(dirname $0); pwd)
 PROJECT_DIR=${SCRIPT_DIR}
-
-# customized
-clear
-CONDA_ENV_NAME=verl_rl_recsys
 
 # Configuration
 CONDA_ENV_NAME=${CONDA_ENV_NAME:-"verl"}
@@ -51,7 +49,7 @@ setup_proxy() {
 install_local() {
     log_info "Installing environment..."
 
-    # # Setup proxy first, but no need on our side
+    # # Setup proxy first
     # setup_proxy
 
     if ! init_conda; then
@@ -80,17 +78,31 @@ install_local() {
     source $(conda info --base)/etc/profile.d/conda.sh
     conda activate ${CONDA_ENV_NAME}
 
+    # # Install flash-attn separately
+    export PYTHONHTTPSVERIFY=0
+    # export FLASH_ATTENTION_FORCE_BUILD=TRUE
+    # export FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE
+    # 2. Fix SSL certificate issue - Method A: Use certifi
+    # export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
+    export REQUESTS_CA_BUNDLE=$SSL_CERT_FILE
+    export FLASH_ATTENTION_BUILD_FROM_SOURCE=1  # Force build from source, skip wheel download
+    # export MAX_JOBS=64
+    export TORCH_CUDA_ARCH_LIST="8.0"
+
     log_info "Installing torch..."
-    pip install torch==2.6.0
+    # pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+    pip install torch==2.6.0 \
+    --index-url https://download.pytorch.org/whl/cu124 \
+    --trusted-host download.pytorch.org \
+    --trusted-host download-r2.pytorch.org
 
     # Install requirements
     log_info "Installing requirements.txt..."
-    pip install -r ${PROJECT_DIR}/requirements.txt
+    pip install -r ${PROJECT_DIR}/requirements.txt  --trusted-host pypi.tuna.tsinghua.edu.cn
+
 
     # Install flash-attn separately
     log_info "Installing flash-attn..."
-    # export PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org"
-    # pip install flash-attn --no-build-isolation --no-cache-dir
     MAX_JOBS=16  pip install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir
 
     # Install verl package
