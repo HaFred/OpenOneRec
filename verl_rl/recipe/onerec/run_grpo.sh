@@ -11,9 +11,11 @@ clear
 export CUDA_VISIBLE_DEVICES=2,3,6,7
 
 # If you see: ncclUnhandledCudaError / "Failed to CUDA calloc ..." during broadcast_params,
-# that is almost always GPU OOM (or fragmentation): ref loads first, then actor+DDP in the
-# same colocated worker, then vLLM. Free other jobs (nvidia-smi), lower MAX_TOKENS_PER_GPU /
-# STAGE2_BEAM_SIZE / RESPONSE_LENGTH / rollout gpu_memory_utilization, or set REF_PARAM_OFFLOAD=1.
+# that is almost always GPU OOM: ref loads first, then actor+DDP in the same colocated worker,
+# then vLLM. Hydra must not get empty ppo_micro_batch_size_per_gpu= — PPO_MICRO_BATCH_PER_GPU
+# defaults to 1 below. ~8B with TP_SIZE=1 is a full replica per GPU; ref CPU offload defaults ON
+# (REF_PARAM_OFFLOAD=0 to disable). If still OOM: TP_SIZE=2 on 4 GPUs, lower ROLLOUT_GPU_MEM_UTIL
+# / MAX_TOKENS_PER_GPU, or ACTOR_PARAM_OFFLOAD=1 / ACTOR_OPTIMIZER_OFFLOAD=1.
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 # BASE_MODEL=/data/models/fredhong/hf_home/OneRec-8B-pro
 # DATA_DIR=/home/fredhong/vllm_fork_genrec_workspace/fred_fork_openonerec/working_branch_fredfork_openonerec/output/rl_data
@@ -74,6 +76,10 @@ export TEMPERATURE=${TEMPERATURE:-1}
 # ============================================================================
 export USE_DYNAMIC_BSZ=${USE_DYNAMIC_BSZ:-True}
 export MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-40960}
+# Required: empty value becomes ppo_micro_batch_size_per_gpu= in Hydra and breaks training.
+export PPO_MICRO_BATCH_PER_GPU=${PPO_MICRO_BATCH_PER_GPU:-1}
+# Default ON: ref CPU offload after load (colocated ref+actor). Disable: REF_PARAM_OFFLOAD=0
+export REF_PARAM_OFFLOAD=${REF_PARAM_OFFLOAD:-1}
 export TRAIN_BATCH_SIZE=$((N_GPUS * N_NODES))
 
 # ============================================================================
@@ -84,6 +90,8 @@ export STAGE2_BEAM_SIZE=${STAGE2_BEAM_SIZE:-32}
 export RESPONSE_LENGTH=${RESPONSE_LENGTH:-2048}
 export STAGE1_MAX_TOKENS=${STAGE1_MAX_TOKENS:-1024}
 export STAGE2_NUM_TOKENS=${STAGE2_NUM_TOKENS:-3}
+# Hybrid Megatron+vLLM on the same GPU: leave headroom below Megatron weights (default was 0.8).
+export ROLLOUT_GPU_MEM_UTIL=${ROLLOUT_GPU_MEM_UTIL:-0.55}
 
 # Think mode configuration
 export ENABLE_THINK=${ENABLE_THINK:-False}
@@ -133,6 +141,8 @@ echo "Rollout N: $ROLLOUT_N"
 echo "Stage2 Beam Size: $STAGE2_BEAM_SIZE"
 echo "Enable Think: $ENABLE_THINK"
 echo "Enable NonThink: $ENABLE_NONTHINK"
+echo "PPO micro-batch/GPU: $PPO_MICRO_BATCH_PER_GPU  REF_PARAM_OFFLOAD: $REF_PARAM_OFFLOAD"
+echo "Rollout GPU mem util: $ROLLOUT_GPU_MEM_UTIL"
 echo "==================================="
 
 
@@ -157,10 +167,22 @@ case "$(printf '%s' "$ENABLE_THINKING_REWARD" | tr '[:upper:]' '[:lower:]')" in
         ;;
 esac
 
-# Offload reference weights to CPU after load (less VRAM during actor+vLLM init; slower KL).
+# Reference CPU offload (REF_PARAM_OFFLOAD exported above; slower KL when enabled)
 REF_OFFLOAD_HYDRA=()
-if [ "${REF_PARAM_OFFLOAD:-0}" = "1" ]; then
-    REF_OFFLOAD_HYDRA+=(++actor_rollout_ref.ref.megatron.param_offload=true)
+case "$(printf '%s' "$REF_PARAM_OFFLOAD" | tr '[:upper:]' '[:lower:]')" in
+    0|false|no|off) ;;
+    *)
+        REF_OFFLOAD_HYDRA+=(++actor_rollout_ref.ref.megatron.param_offload=true)
+        ;;
+esac
+
+# Optional extra VRAM (slower): actor weights / optimizer on CPU when set to 1
+ACTOR_OFFLOAD_HYDRA=()
+if [ "${ACTOR_PARAM_OFFLOAD:-0}" = "1" ]; then
+    ACTOR_OFFLOAD_HYDRA+=(++actor_rollout_ref.actor.megatron.param_offload=true)
+fi
+if [ "${ACTOR_OPTIMIZER_OFFLOAD:-0}" = "1" ]; then
+    ACTOR_OFFLOAD_HYDRA+=(++actor_rollout_ref.actor.megatron.optimizer_offload=true)
 fi
 
 # ============================================================================
@@ -198,6 +220,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     custom_reward_function.name=compute_score \
     "${THINK_REWARD_HYDRA[@]}" \
     "${REF_OFFLOAD_HYDRA[@]}" \
+    "${ACTOR_OFFLOAD_HYDRA[@]}" \
     actor_rollout_ref.actor.use_dynamic_bsz=$USE_DYNAMIC_BSZ \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_PER_GPU \
@@ -217,7 +240,7 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$((ROLLOUT_TP_SIZE)) \
     actor_rollout_ref.rollout.name=two_stage \
     ++actor_rollout_ref.rollout.backend=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=$ROLLOUT_GPU_MEM_UTIL \
     ++actor_rollout_ref.rollout.max_length=$((RESPONSE_LENGTH)) \
     ++actor_rollout_ref.rollout.stage1_max_tokens=$((STAGE1_MAX_TOKENS)) \
     ++actor_rollout_ref.rollout.stage2_num_tokens=$((STAGE2_NUM_TOKENS)) \
