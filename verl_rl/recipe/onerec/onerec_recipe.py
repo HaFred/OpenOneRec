@@ -133,6 +133,15 @@ class OneRecDataset(Dataset):
 
     def _extract_prompt_fields(self, row: dict[str, Any]) -> dict[str, Any]:
         raw_messages = row.get("messages")
+        if raw_messages is None and self.prompt_key in row:
+            # Some parquet variants already store prompt-like messages under prompt_key.
+            raw_messages = row.get(self.prompt_key)
+        if raw_messages is None:
+            # Common alternates across datasets.
+            for alt in ("conversation", "conversations", "chat", "input", "query"):
+                if alt in row and row.get(alt) is not None:
+                    raw_messages = row.get(alt)
+                    break
         if isinstance(raw_messages, str):
             messages = ast.literal_eval(raw_messages)
         else:
@@ -151,7 +160,11 @@ class OneRecDataset(Dataset):
         ]
 
         if not clean_chats:
-            raise ValueError("Sample has empty messages; please check data integrity.")
+            raise ValueError(
+                f"Sample has empty/invalid messages. Expected message list under one of: "
+                f"'messages', '{self.prompt_key}', 'conversation', 'conversations', 'chat', "
+                f"'input', 'query'. Available keys: {sorted(row.keys())}"
+            )
 
         prompt_messages = clean_chats[:-1]
 
@@ -223,7 +236,42 @@ class OneRecDataset(Dataset):
         return len(self.dataframe)
 
     def _build_messages(self, example: dict[str, Any]) -> list[dict[str, Any]]:
-        messages: list[dict[str, Any]] = example.pop(self.prompt_key)
+        # Primary path: preprocessed prompt field.
+        messages = example.pop(self.prompt_key, None)
+
+        # Fallback for schema drift between train/val parquet variants.
+        if messages is None:
+            for alt in ("messages", "conversation", "conversations", "chat", "input", "query"):
+                if alt in example and example.get(alt) is not None:
+                    messages = example.pop(alt)
+                    break
+
+        if messages is None:
+            raise KeyError(
+                f"Missing prompt field '{self.prompt_key}'. "
+                f"Available keys: {sorted(example.keys())}"
+            )
+
+        if isinstance(messages, str):
+            messages = ast.literal_eval(messages)
+
+        # Accept both already-normalized [{'role','content': str}] and raw multimodal message format.
+        if isinstance(messages, list) and messages and isinstance(messages[0], dict):
+            first_content = messages[0].get("content")
+            if isinstance(first_content, list):
+                normalized: list[dict[str, Any]] = []
+                for msg in messages:
+                    normalized.append(
+                        {
+                            "role": msg.get("role"),
+                            "content": "".join(
+                                seg.get("text", "")
+                                for seg in msg.get("content", [])
+                                if isinstance(seg, dict) and seg.get("type") == "text"
+                            ),
+                        }
+                    )
+                messages = normalized
 
         if self.image_key in example or self.video_key in example:
             for message in messages:
