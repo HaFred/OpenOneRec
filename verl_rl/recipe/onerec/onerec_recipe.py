@@ -79,6 +79,17 @@ class OneRecDataset(Dataset):
         self.enable_nonthink = config.get("enable_nonthink", False)
         self.shuffle = config.get("shuffle", True)
         self.seed = config.get("seed", None)
+        # datasets.map/filter with num_proc triggers pickling of bound methods/self.
+        # Keep single-process by default to avoid dill errors in complex runtime configs.
+        map_num_proc_cfg = config.get("map_num_proc", None)
+        if map_num_proc_cfg is None:
+            self.map_num_proc = None
+        else:
+            try:
+                map_num_proc_val = int(map_num_proc_cfg)
+            except (TypeError, ValueError):
+                map_num_proc_val = 0
+            self.map_num_proc = map_num_proc_val if map_num_proc_val > 1 else None
 
         self.use_force_prefix = config.get("use_force_prefix", False)
         self._FORCE_PREFIX_CONTENT = "<think>\n</think><|sid_begin|>"
@@ -124,7 +135,7 @@ class OneRecDataset(Dataset):
 
         self.dataframe = self.dataframe.map(
             self._extract_prompt_fields,
-            num_proc=1,  # safer for megatron
+            num_proc=self.map_num_proc,
             desc="Extract prompts and reward annotations",
         )
 
@@ -217,7 +228,7 @@ class OneRecDataset(Dataset):
 
         filtered = dataframe.filter(
             lambda doc: doc_length(doc) <= self.max_prompt_length - 10,
-            num_proc=1,
+            num_proc=self.map_num_proc,
             desc=f"Filtering prompts longer than {self.max_prompt_length - 10} tokens",
         )
 
