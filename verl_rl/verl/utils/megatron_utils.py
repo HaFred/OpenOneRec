@@ -23,6 +23,10 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+
+from verl.utils.megatron_mcore_compat import ensure_megatron_mcore_runtime_compat
+
+ensure_megatron_mcore_runtime_compat()
 from megatron.core import ModelParallelConfig, mpu, tensor_parallel
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import DistributedDataParallelConfig

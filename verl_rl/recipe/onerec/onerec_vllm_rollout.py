@@ -126,6 +126,13 @@ class OneRecvLLMRollout(vLLMRollout):
                 stage2_input["multi_modal_data"] = vllm_inputs[i]["multi_modal_data"]
             stage2_inputs.append(stage2_input)
 
+        # Store decoded CoT texts in non_tensor_batch for monitoring / reward
+        cot_decoded = [tokenizer.decode(ids, skip_special_tokens=False) for ids in cot_responses]
+        non_tensor_batch["_cot_texts"] = np.array(cot_decoded, dtype=object)
+        non_tensor_batch["_cot_token_lengths"] = np.array(
+            [len(ids) for ids in cot_responses], dtype=np.int64,
+        )
+
         # Stage 2: Item Beam Search
         # Read from kwargs first, then fallback to config, then default
         beam_width = kwargs.get("stage2_beam_size", getattr(self.config, "stage2_beam_size", 32))

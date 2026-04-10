@@ -1,0 +1,117 @@
+# OneRec GRPO + Megatron + two-stage vLLM rollout.
+#
+# Composes ppo_megatron_trainer then applies OneRec defaults so run_grpo.sh does not
+# need long Hydra CLI lists. Override via env vars (see ${oc.env:...}) or extra CLI args.
+#
+# Launch: from `verl_rl` root, `python -m recipe.onerec.main_onerec_ppo --config-name onerec_grpo_megatron`
+defaults:
+  - ppo_megatron_trainer
+  - _self_
+
+algorithm:
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: true
+  use_kl_in_reward: false
+
+data:
+  max_prompt_length: 10240
+  enable_think: false
+  enable_nonthink: false
+  use_force_prefix: false
+  prompt_key: prompt
+  shuffle: true
+  max_response_length: ${oc.env:RESPONSE_LENGTH,2048}
+  train_batch_size: ${oc.env:TRAIN_BATCH_SIZE,8}
+  filter_overlong_prompts: true
+  truncation: error
+  reward_fn_key: ${oc.env:OPENIF_PRODUCT_PARQUET_SOURCE,data_source}
+  data_source_key: ${oc.env:OPENIF_PRODUCT_PARQUET_SOURCE,data_source}
+  custom_cls:
+    path: ${oc.env:ONEREC_RECIPE_PATH,recipe/onerec/onerec_recipe.py}
+    name: OneRecDataset
+  # run_grpo.sh passes TRAIN_FILES / VAL_FILES to match DATA_DIR layout.
+  train_files:
+    - ${hydra.runtime.cwd}/output/rl_data/train.parquet
+  val_files:
+    - ${hydra.runtime.cwd}/output/rl_data/test.parquet
+
+custom_reward_function:
+  path: ${oc.env:ONEREC_RECIPE_PATH,recipe/onerec/onerec_recipe.py}
+  name: compute_score
+  reward_kwargs:
+    enable_thinking_reward: false
+    thinking_reward_weight: ${oc.env:THINKING_REWARD_WEIGHT,0.3}
+
+actor_rollout_ref:
+  ref:
+    entropy_from_logits_with_chunking: true
+    log_prob_max_token_len_per_gpu: ${oc.env:MAX_TOKENS_PER_GPU,40960}
+    megatron:
+      tensor_model_parallel_size: ${oc.env:TP_SIZE,2}
+      pipeline_model_parallel_size: ${oc.env:PP_SIZE,2}
+      context_parallel_size: ${oc.env:CP_SIZE,1}
+      expert_model_parallel_size: ${oc.env:EP_SIZE,1}
+      sequence_parallel: true
+  actor:
+    entropy_checkpointing: true
+    use_dynamic_bsz: true
+    ppo_max_token_len_per_gpu: ${oc.env:MAX_TOKENS_PER_GPU,40960}
+    ppo_micro_batch_size_per_gpu: ${oc.env:PPO_MICRO_BATCH_PER_GPU,1}
+    ppo_mini_batch_size: ${oc.env:TRAIN_BATCH_SIZE,8}
+    clip_ratio_high: 0.28
+    use_kl_loss: true
+    kl_loss_coef: ${oc.env:KL_LOSS_COEF,0.001}
+    kl_loss_type: low_var_kl
+    optim:
+      lr: ${oc.env:LEARNING_RATE,2e-6}
+      lr_warmup_steps: 10
+      weight_decay: 0.1
+    megatron:
+      use_mbridge: true
+      tensor_model_parallel_size: ${oc.env:TP_SIZE,2}
+      pipeline_model_parallel_size: ${oc.env:PP_SIZE,2}
+      context_parallel_size: ${oc.env:CP_SIZE,1}
+      expert_model_parallel_size: ${oc.env:EP_SIZE,1}
+      sequence_parallel: true
+  rollout:
+    enable_chunked_prefill: true
+    calculate_log_probs: false
+    log_prob_max_token_len_per_gpu: ${oc.env:MAX_TOKENS_PER_GPU,40960}
+    max_num_batched_tokens: ${oc.env:MAX_TOKENS_PER_GPU,40960}
+    max_num_seqs: 2048
+    n: ${oc.env:ROLLOUT_N,1}
+    dtype: bfloat16
+    tensor_model_parallel_size: ${oc.env:ROLLOUT_TP_SIZE,2}
+    name: two_stage
+    backend: vllm
+    gpu_memory_utilization: 0.8
+    max_length: ${oc.env:RESPONSE_LENGTH,2048}
+    stage1_max_tokens: ${oc.env:STAGE1_MAX_TOKENS,1024}
+    stage2_num_tokens: ${oc.env:STAGE2_NUM_TOKENS,3}
+    stage2_beam_size: ${oc.env:STAGE2_BEAM_SIZE,32}
+    engine_kwargs:
+      vllm:
+        max_logprobs: 320
+    temperature: ${oc.env:TEMPERATURE,1}
+    top_p: 1.0
+    do_sample: true
+  model:
+    path: ${oc.env:BASE_MODEL,/path/to/your/model}
+    enable_activation_offload: true
+    use_remove_padding: true
+    enable_gradient_checkpointing: true
+
+critic:
+  enable: false
+
+trainer:
+  default_hdfs_dir: null
+  n_gpus_per_node: ${oc.env:N_GPUS,8}
+  nnodes: ${oc.env:N_NODES,1}
+  save_freq: 50
+  test_freq: 50
+  project_name: ${oc.env:PROJECT_NAME,OneRec_RL}
+  experiment_name: ${oc.env:EXPERIMENT_NAME,grpo_two_stage}
+  default_local_dir: ${oc.env:OUTPUT_DIR,./output}/ckpt
+  total_epochs: 20
+  val_before_train: true

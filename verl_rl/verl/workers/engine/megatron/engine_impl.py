@@ -14,19 +14,41 @@
 from typing import Callable
 
 import torch
+import torch.distributed
 
 from verl import DataProto
+from verl.utils.device import get_nccl_backend, get_torch_device
 
 from ..base import BaseEngine, EngineRegistry
+from .transformer_impl import initialize_megatron_model_parallel, summarize_parallelism_state, validate_parallelism
 
 
 @EngineRegistry.register("megatron")
 class MegatronEngine(BaseEngine):
     def __init__(self, config):
-        raise NotImplementedError
+        self.config = config
+        self.mode = None
+        self.module = None
+        self.optimizer = None
+        self.lr_scheduler = None
 
     def init_model(self):
-        raise NotImplementedError
+        if not torch.distributed.is_initialized():
+            rank = int(__import__("os").environ.get("LOCAL_RANK", "0"))
+            torch.distributed.init_process_group(backend=get_nccl_backend())
+            get_torch_device().set_device(rank)
+
+        megatron_cfg = getattr(self.config, "megatron", None)
+        if megatron_cfg is None:
+            raise ValueError("MegatronEngine requires `config.megatron`.")
+        validate_parallelism(megatron_cfg, world_size=torch.distributed.get_world_size(), role_name="engine_megatron")
+        initialize_megatron_model_parallel(megatron_cfg)
+        state = summarize_parallelism_state()
+        print(
+            f"[megatron_init][engine] TP={state['tp_size']} PP={state['pp_size']} CP={state['cp_size']} "
+            f"DP={state['dp_size']} ranks(tp/pp/cp/dp)=({state['tp_rank']}/{state['pp_rank']}/"
+            f"{state['cp_rank']}/{state['dp_rank']})"
+        )
 
     def train_mode(self):
         """
@@ -36,7 +58,17 @@ class MegatronEngine(BaseEngine):
             with engine.train_mode():
                 # runs in training mode
         """
-        raise NotImplementedError
+        class _TrainCtx:
+            def __init__(self, engine):
+                self.engine = engine
+
+            def __enter__(self):
+                self.engine.mode = "train"
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self.engine.mode = None
+
+        return _TrainCtx(self)
 
     def eval_mode(self):
         """
@@ -46,7 +78,17 @@ class MegatronEngine(BaseEngine):
             with engine.eval_mode():
                 # runs in evaluation mode
         """
-        raise NotImplementedError
+        class _EvalCtx:
+            def __init__(self, engine):
+                self.engine = engine
+
+            def __enter__(self):
+                self.engine.mode = "eval"
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self.engine.mode = None
+
+        return _EvalCtx(self)
 
     def infer_batch(
         self,
@@ -64,7 +106,10 @@ class MegatronEngine(BaseEngine):
         Returns:
             dict[str, torch.Tensor]: A dictionary containing the predictions for the entire batch.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "MegatronEngine.infer_batch is not wired in this fork. "
+            "Use legacy `verl.workers.megatron_workers` for actor/critic/ref rollout execution."
+        )
 
     def train_batch(
         self,
@@ -81,13 +126,17 @@ class MegatronEngine(BaseEngine):
         Returns:
             dict[str, torch.Tensor]: A dictionary containing the aggregated training metrics for the mini-batch.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "MegatronEngine.train_batch is not wired in this fork. "
+            "Use legacy `verl.workers.megatron_workers` for actor/critic/ref rollout execution."
+        )
 
     def optimizer_zero_grad(self):
         """
         Zero out gradients of all parameters before starting a new backward pass.
         """
-        raise NotImplementedError
+        if self.optimizer is not None:
+            self.optimizer.zero_grad()
 
     def optimizer_step(self):
         """
@@ -96,7 +145,10 @@ class MegatronEngine(BaseEngine):
         Returns:
             grad_norm (float): The norm of the gradients before clipping or update.
         """
-        raise NotImplementedError
+        if self.optimizer is None:
+            return torch.tensor(0.0)
+        self.optimizer.step()
+        return torch.tensor(0.0)
 
     def lr_scheduler_step(self):
         """
@@ -105,7 +157,10 @@ class MegatronEngine(BaseEngine):
         Returns:
             current_lr (float or list[float]): Updated learning rate(s).
         """
-        raise NotImplementedError
+        if self.lr_scheduler is None:
+            return [0.0]
+        self.lr_scheduler.step()
+        return self.lr_scheduler.get_last_lr()
 
     def shard_data(self, data):
         """
@@ -117,7 +172,7 @@ class MegatronEngine(BaseEngine):
         Returns:
             Sharded data in the same format as input.
         """
-        raise NotImplementedError
+        return data
 
     def unshard_data(self, data):
         """
@@ -129,7 +184,7 @@ class MegatronEngine(BaseEngine):
         Returns:
             Unsharded, combined data.
         """
-        raise NotImplementedError
+        return data
 
     def to(self, device: str, model: bool = True, optimizer: bool = True):
         """
@@ -140,7 +195,8 @@ class MegatronEngine(BaseEngine):
             model: If True, move the model.
             optimizer: If True, move the optimizer states.
         """
-        raise NotImplementedError
+        if device not in ("cuda", "cpu"):
+            raise ValueError(f"Invalid device type: {device}")
 
     def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
         """
@@ -152,7 +208,7 @@ class MegatronEngine(BaseEngine):
             global_step: Integer training step number for naming.
             max_ckpt_to_keep: Maximum number of recent checkpoints to retain.
         """
-        raise NotImplementedError
+        raise NotImplementedError("Checkpointing for MegatronEngine shim is unsupported in this fork.")
 
     def load_checkpoint(self, local_path, hdfs_path=None, del_local_after_load=True):
         """
@@ -163,4 +219,4 @@ class MegatronEngine(BaseEngine):
             hdfs_path: Optional HDFS path where checkpoint is stored.
             del_local_after_load: Whether to delete local copy after loading.
         """
-        raise NotImplementedError
+        raise NotImplementedError("Checkpointing for MegatronEngine shim is unsupported in this fork.")

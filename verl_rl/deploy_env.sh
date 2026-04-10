@@ -76,6 +76,9 @@ install_local() {
     source $(conda info --base)/etc/profile.d/conda.sh
     conda activate ${CONDA_ENV_NAME}
 
+    export PYTHONHTTPSVERIFY=0  # necessary for local env
+    export MAX_JOBS=32
+
     log_info "Installing torch..."
     pip install torch==2.6.0
 

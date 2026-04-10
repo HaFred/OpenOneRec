@@ -27,6 +27,25 @@ bash deploy_env.sh
 bash deploy_env.sh --all-nodes
 ```
 
+### 2.1 Vendored Megatron (no pip install required)
+
+Megatron is vendored at `third_party/Megatron-LM` so you can modify it directly
+without reinstalling a wheel.
+
+- Default behavior: `import megatron` resolves via
+  `verl_rl/megatron/__init__.py`, which explicitly maps to
+  `third_party/Megatron-LM/megatron`.
+- Disable vendored Megatron for debugging by setting
+  `VERL_DISABLE_VENDORED_MEGATRON=1`. In this mode, an external `megatron`
+  package must be available on `PYTHONPATH`.
+
+To refresh Megatron later:
+
+```bash
+cd third_party/Megatron-LM
+git pull
+```
+
 ### 3. Start Ray cluster
 
 ```bash

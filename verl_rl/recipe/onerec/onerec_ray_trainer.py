@@ -396,20 +396,31 @@ class RayPPOTrainer:
         # number of GPUs total
         n_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
         if config.actor_rollout_ref.actor.strategy == "megatron":
-            model_parallel_size = (
-                config.actor_rollout_ref.actor.megatron.tensor_model_parallel_size
-                * config.actor_rollout_ref.actor.megatron.pipeline_model_parallel_size
-            )
+            tp_size = config.actor_rollout_ref.actor.megatron.tensor_model_parallel_size
+            pp_size = config.actor_rollout_ref.actor.megatron.pipeline_model_parallel_size
+            cp_size = config.actor_rollout_ref.actor.megatron.context_parallel_size
+            ep_size = config.actor_rollout_ref.actor.megatron.expert_model_parallel_size
+            model_parallel_size = tp_size * pp_size * cp_size * ep_size
             assert (
-                n_gpus % (model_parallel_size * config.actor_rollout_ref.actor.megatron.context_parallel_size) == 0
+                n_gpus % model_parallel_size == 0
             ), (
-                f"n_gpus ({n_gpus}) must be divisible by model_parallel_size ({model_parallel_size}) times "
-                f"context_parallel_size ({config.actor_rollout_ref.actor.megatron.context_parallel_size})"
+                f"n_gpus ({n_gpus}) must be divisible by TP*PP*CP*EP ({model_parallel_size}) "
+                f"where TP={tp_size}, PP={pp_size}, CP={cp_size}, EP={ep_size}"
             )
-            megatron_dp = n_gpus // (
-                model_parallel_size * config.actor_rollout_ref.actor.megatron.context_parallel_size
+            megatron_dp = n_gpus // model_parallel_size
+            assert megatron_dp >= 1, (
+                f"Derived data parallel size must be >= 1, got {megatron_dp}. "
+                f"Please reduce TP/PP/CP/EP or increase available GPUs."
             )
             minimal_bsz = megatron_dp * config.actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu
+            rollout_tp = config.actor_rollout_ref.rollout.tensor_model_parallel_size
+            rollout_dp = n_gpus // rollout_tp if rollout_tp > 0 and n_gpus % rollout_tp == 0 else "N/A"
+            print(
+                "[validate_config][5d_megatron] "
+                f"world_size={n_gpus}, TP={tp_size}, PP={pp_size}, CP={cp_size}, EP={ep_size}, "
+                f"DP={megatron_dp}, train_model_parallel={model_parallel_size}, "
+                f"rollout_infer_tp={rollout_tp}, rollout_infer_dp={rollout_dp}"
+            )
         else:
             minimal_bsz = n_gpus
 
