@@ -97,6 +97,8 @@ export USE_DYNAMIC_BSZ=${USE_DYNAMIC_BSZ:-True}
 export MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-40960}
 # Required: empty value becomes ppo_micro_batch_size_per_gpu= in Hydra and breaks training.
 export PPO_MICRO_BATCH_PER_GPU=${PPO_MICRO_BATCH_PER_GPU:-1}
+# compute_log_prob uses rollout.log_prob_micro_batch_size_per_gpu (not actor PPO micro-batch)
+export LOGPROB_MICRO_BATCH_PER_GPU=${LOGPROB_MICRO_BATCH_PER_GPU:-$PPO_MICRO_BATCH_PER_GPU}
 # Default ON: ref CPU offload after load (colocated ref+actor). Disable: REF_PARAM_OFFLOAD=0
 export REF_PARAM_OFFLOAD=${REF_PARAM_OFFLOAD:-1}
 export TRAIN_BATCH_SIZE=$((N_GPUS * N_NODES))
@@ -185,6 +187,7 @@ echo "Stage2 Beam Size: $STAGE2_BEAM_SIZE"
 echo "Enable Think: $ENABLE_THINK"
 echo "Enable NonThink: $ENABLE_NONTHINK"
 echo "PPO micro-batch/GPU: $PPO_MICRO_BATCH_PER_GPU  REF_PARAM_OFFLOAD: $REF_PARAM_OFFLOAD"
+echo "LogProb micro-batch/GPU (rollout/ref): $LOGPROB_MICRO_BATCH_PER_GPU"
 echo "Data prompt cap: $DATA_MAX_PROMPT_LENGTH  response: $RESPONSE_LENGTH  vLLM max_model_len≈$ROLLOUT_MAX_MODEL_LEN"
 echo "vLLM max_num_batched_tokens=$ROLLOUT_MAX_NUM_BATCHED_TOKENS  max_num_seqs=$ROLLOUT_MAX_NUM_SEQS  gpu_mem_util=$ROLLOUT_GPU_MEM_UTIL"
 echo "==================================="
@@ -269,7 +272,8 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_PER_GPU \
     actor_rollout_ref.actor.ppo_mini_batch_size=$TRAIN_BATCH_SIZE \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$LOGPROB_MICRO_BATCH_PER_GPU \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LOGPROB_MICRO_BATCH_PER_GPU \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=$MAX_TOKENS_PER_GPU \
     actor_rollout_ref.rollout.max_num_batched_tokens=$ROLLOUT_MAX_NUM_BATCHED_TOKENS \
