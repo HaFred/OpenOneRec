@@ -19,7 +19,12 @@ export CUDA_VISIBLE_DEVICES=2,3,6,7
 # (REF_PARAM_OFFLOAD=0 to disable). vLLM KV OOM: shrink DATA_MAX_PROMPT_LENGTH / RESPONSE_LENGTH /
 # STAGE2_BEAM_SIZE / ROLLOUT_MAX_NUM_SEQS, disable prefix cache (set in Hydra below), raise TP_SIZE
 # and ROLLOUT_TP_SIZE, or ACTOR_PARAM_OFFLOAD=1. Preset: ONEREC_8B_4GPU=1.
-export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+#
+# vLLM CuMem allocator is incompatible with PyTorch expandable_segments.
+if [[ "${PYTORCH_CUDA_ALLOC_CONF:-}" == *"expandable_segments:True"* ]]; then
+    echo "[run_grpo] Unsetting PYTORCH_CUDA_ALLOC_CONF for vLLM compatibility: ${PYTORCH_CUDA_ALLOC_CONF}"
+    unset PYTORCH_CUDA_ALLOC_CONF
+fi
 # BASE_MODEL=/data/models/fredhong/hf_home/OneRec-8B-pro
 # DATA_DIR=/home/fredhong/vllm_fork_genrec_workspace/fred_fork_openonerec/working_branch_fredfork_openonerec/output/rl_data
 TRAIN_FILES=${TRAIN_FILES:-"[$DATA_DIR/train_1k.parquet]"}
@@ -67,7 +72,16 @@ export EP_SIZE=${EP_SIZE:-1}
 # ============================================================================
 export BASE_MODEL=${BASE_MODEL:-"/path/to/your/model"}
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}
-export VLLM_ATTENTION_BACKEND=XFORMERS
+# vLLM V1 does not support XFORMERS attention backend.
+# Default to V1 (recommended). If you explicitly need XFORMERS, force V0:
+#   FORCE_VLLM_V0_XFORMERS=1
+export VLLM_USE_V1=${VLLM_USE_V1:-1}
+if [ "${FORCE_VLLM_V0_XFORMERS:-0}" = "1" ]; then
+    export VLLM_USE_V1=0
+    export VLLM_ATTENTION_BACKEND=XFORMERS
+else
+    unset VLLM_ATTENTION_BACKEND
+fi
 
 # ============================================================================
 # Training Hyperparameters
