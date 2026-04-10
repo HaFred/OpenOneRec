@@ -5,6 +5,8 @@
 set -e
 
 export HYDRA_FULL_ERROR=1
+# Default to in-process OneRec task execution (avoids CPU-only Ray TaskRunner import path).
+export ONEREC_USE_RAY_TASKRUNNER=${ONEREC_USE_RAY_TASKRUNNER:-0}
 
 # fred
 clear
