@@ -83,7 +83,13 @@ class OneRecDataset(Dataset):
         if self.enable_think and self.enable_nonthink:
             raise ValueError("enable_think and enable_nonthink cannot be both True") 
 
-        self.num_workers = os.cpu_count()
+        # For small datasets, too many map/filter workers can be slower due to
+        # process startup + IPC overhead. Make worker count configurable and cap
+        # default parallelism to a practical value.
+        configured_num_workers = config.get("filter_overlong_prompts_workers", None)
+        if configured_num_workers is None:
+            configured_num_workers = config.get("num_workers", 16)
+        self.num_workers = max(1, min(int(configured_num_workers), os.cpu_count() or 1))
         self.use_shm = config.get("use_shm", False)
         self.serialize_dataset = False
 
