@@ -6,7 +6,9 @@
 *.swp
 *.swo
 *~
-
+outputs
+*.parquet
+*backup*
 # OS
 .DS_Store
 Thumbs.db
@@ -65,6 +67,7 @@ mlruns/
 output/
 checkpoints/
 ckpt/
+tensorboard*
 
 # Data
 # *.parquet

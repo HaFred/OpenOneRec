@@ -55,7 +55,6 @@ from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoModelForTokenClassification,
-    AutoModelForVision2Seq,
     GenerationConfig,
     PretrainedConfig,
 )
@@ -69,6 +68,7 @@ except ImportError:
 from tqdm import tqdm
 
 from verl.utils import hf_processor, hf_tokenizer
+from verl.utils.transformers_compat import get_auto_model_for_vision2seq
 
 
 @dataclass
@@ -113,7 +113,7 @@ class BaseModelMerger(ABC):
         elif "ForCausalLM" in self.model_config.architectures[0]:
             return AutoModelForCausalLM
         elif "ForConditionalGeneration" in self.model_config.architectures[0]:
-            return AutoModelForVision2Seq
+            return get_auto_model_for_vision2seq()
 
         raise NotImplementedError(f"Unknown architecture {self.model_config.architectures}")
 

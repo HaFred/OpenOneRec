@@ -489,15 +489,37 @@ def apply_fsdp2(model, fsdp_kwargs, config):
         "transformer_layer_cls_to_wrap", default_transformer_cls_names_to_wrap
     )
 
-    if isinstance(fsdp_transformer_layer_cls_to_wrap, str):
+    if fsdp_transformer_layer_cls_to_wrap is None:
+        raise ValueError("`transformer_layer_cls_to_wrap` must be set for FSDP2 wrapping.")
+    if isinstance(fsdp_transformer_layer_cls_to_wrap, (str, type)):
         fsdp_transformer_layer_cls_to_wrap = [fsdp_transformer_layer_cls_to_wrap]
+    else:
+        fsdp_transformer_layer_cls_to_wrap = list(fsdp_transformer_layer_cls_to_wrap)
 
-    assert len(fsdp_transformer_layer_cls_to_wrap) > 0 and fsdp_transformer_layer_cls_to_wrap[0] is not None
+    fsdp_transformer_layer_cls_to_wrap = [x for x in fsdp_transformer_layer_cls_to_wrap if x is not None]
+    if not fsdp_transformer_layer_cls_to_wrap:
+        raise ValueError("`transformer_layer_cls_to_wrap` must contain at least one valid layer class/name.")
+
+    wrap_layer_type = []
+    wrap_layer_name = set()
+    for layer_class in fsdp_transformer_layer_cls_to_wrap:
+        if isinstance(layer_class, str):
+            wrap_layer_name.add(layer_class)
+        elif isinstance(layer_class, type):
+            wrap_layer_type.append(layer_class)
+        else:
+            raise TypeError(
+                "`transformer_layer_cls_to_wrap` entries must be class names (str) or class types, "
+                f"got {type(layer_class)}"
+            )
+    wrap_layer_type = tuple(wrap_layer_type)
 
     modules = []
     for name, module in model.named_modules():
-        if module.__class__.__name__ in fsdp_transformer_layer_cls_to_wrap or (
-            isinstance(module, nn.Embedding) and not model.config.tie_word_embeddings
+        if (
+            (wrap_layer_type and isinstance(module, wrap_layer_type))
+            or module.__class__.__name__ in wrap_layer_name
+            or (isinstance(module, nn.Embedding) and not model.config.tie_word_embeddings)
         ):
             modules.append(module)
 

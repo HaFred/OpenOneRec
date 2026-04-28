@@ -58,6 +58,40 @@ from verl.workers.rollout.base import BaseRollout
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+
+def _ensure_tokenizer_compatibility() -> None:
+    """Patch older/newer HF tokenizer APIs expected by this vLLM build."""
+    try:
+        from transformers import PreTrainedTokenizerBase
+    except ImportError:
+        return
+
+    if hasattr(PreTrainedTokenizerBase, "all_special_tokens_extended"):
+        return
+
+    @property
+    def all_special_tokens_extended(self):
+        special_map = getattr(self, "special_tokens_map_extended", None) or {}
+        tokens = []
+        for value in special_map.values():
+            if isinstance(value, (list, tuple)):
+                tokens.extend(value)
+            elif value is not None:
+                tokens.append(value)
+        if tokens:
+            return tokens
+        # Fallback for tokenizer versions that only expose all_special_tokens.
+        return list(getattr(self, "all_special_tokens", []))
+
+    PreTrainedTokenizerBase.all_special_tokens_extended = all_special_tokens_extended
+    logger.warning(
+        "Patched transformers.PreTrainedTokenizerBase with "
+        "all_special_tokens_extended for vLLM compatibility."
+    )
+
+
+_ensure_tokenizer_compatibility()
+
 # TODO
 # 1. support pp in vllm
 # 2. passing tokenizer is not necessary? no encoding/decoding is happending here
