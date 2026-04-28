@@ -72,6 +72,7 @@ from verl.utils.model import compute_position_id_with_mask
 from verl.utils.profiler import DistProfiler, DistProfilerExtension, log_gpu_memory_usage, simple_timer
 from verl.utils.profiler.performance import reduce_timing
 from verl.utils.py_functional import convert_to_regular_types
+from verl.utils.transformers_compat import get_auto_model_for_vision2seq, is_vision2seq_config
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 
 logger = logging.getLogger(__file__)
@@ -206,6 +207,32 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             self.config.ref.log_prob_micro_batch_size //= self.device_mesh.size() // self.ulysses_sequence_parallel_size
             self.config.ref.log_prob_micro_batch_size_per_gpu = self.config.ref.log_prob_micro_batch_size
 
+    @staticmethod
+    def _normalize_wrap_targets(value):
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple, set)):
+            normalized = []
+            for item in value:
+                if isinstance(item, str):
+                    normalized.append(item)
+                elif hasattr(item, "__name__"):
+                    normalized.append(str(item.__name__))
+                else:
+                    normalized.append(str(item))
+            # Deduplicate and keep deterministic ordering for reproducibility.
+            return sorted(set(normalized))
+        return value
+
+    def _normalize_fsdp_wrap_policy(self, fsdp_config) -> None:
+        wrap_policy = fsdp_config.get("wrap_policy", None)
+        if wrap_policy is None:
+            return
+        current = wrap_policy.get("transformer_layer_cls_to_wrap", None)
+        normalized = self._normalize_wrap_targets(current)
+        if normalized is not None:
+            wrap_policy["transformer_layer_cls_to_wrap"] = normalized
+
     def _build_model_optimizer(
         self,
         model_path,
@@ -220,9 +247,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         role="actor",
         enable_activation_offload=False,
     ):
+        self._normalize_fsdp_wrap_policy(fsdp_config)
+
         from torch import optim
         from torch.distributed.fsdp import CPUOffload, MixedPrecision
-        from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForVision2Seq
+        from transformers import AutoConfig, AutoModelForCausalLM
 
         from verl.utils.model import get_generation_config, print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
@@ -277,8 +306,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            if type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
-                actor_module_class = AutoModelForVision2Seq
+            if is_vision2seq_config(actor_model_config):
+                actor_module_class = get_auto_model_for_vision2seq()
             else:
                 actor_module_class = AutoModelForCausalLM
 
