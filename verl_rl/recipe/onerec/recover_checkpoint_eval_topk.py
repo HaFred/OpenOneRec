@@ -199,19 +199,39 @@ def ensure_merged_checkpoints(
 
     for step, actor_checkpoint in actor_checkpoints:
         target_dir = merged_root / f"global_step_{step}"
-        if step in merged_by_step and target_dir.is_dir() and any(target_dir.iterdir()) and not args.force_merge:
-            continue
-        merged_path = merge_actor_checkpoint(
-            args,
-            step,
-            actor_checkpoint,
-            target_dir,
-            result_dir / f"global_step_{step}.merge.log",
-        )
-        if merged_path is not None:
-            merged_by_step[step] = merged_path
+        if step not in merged_by_step or args.force_merge:
+            # Defer the actual merge until this checkpoint is about to be evaluated.
+            merged_by_step[step] = target_dir.resolve()
 
     return sorted(merged_by_step.items())
+
+
+def prepare_merged_checkpoint(
+    args: argparse.Namespace,
+    step: int,
+    merged_model: Path,
+    result_dir: Path,
+    original_root: Path,
+) -> Path | None:
+    if merged_model.is_dir() and any(merged_model.iterdir()) and not args.force_merge:
+        return merged_model
+
+    actor_checkpoint = original_root / f"global_step_{step}" / "actor"
+    if not actor_checkpoint.is_dir():
+        print(
+            f"[recover_eval] Missing merged checkpoint and actor checkpoint for global_step_{step}: "
+            f"merged={merged_model}, actor={actor_checkpoint}",
+            flush=True,
+        )
+        return None
+
+    return merge_actor_checkpoint(
+        args,
+        step,
+        actor_checkpoint.resolve(),
+        merged_model,
+        result_dir / f"global_step_{step}.merge.log",
+    )
 
 
 def read_metric(result_path: Path, metric: str) -> float | None:
@@ -525,6 +545,10 @@ def evaluate_checkpoints(
         records = []
         failed_steps = []
         for step, merged_model in checkpoints:
+            merged_model = prepare_merged_checkpoint(args, step, merged_model, result_dir, original_root)
+            if merged_model is None:
+                failed_steps.append(step)
+                continue
             score, result_path, log_path = run_eval(args, step, merged_model, result_dir)
             if score is None:
                 failed_steps.append(step)
@@ -548,6 +572,11 @@ def evaluate_checkpoints(
             except queue.Empty:
                 return
             try:
+                merged_model = prepare_merged_checkpoint(args, step, merged_model, result_dir, original_root)
+                if merged_model is None:
+                    with lock:
+                        failed_steps.append(step)
+                    continue
                 score, result_path, log_path = run_eval(
                     args,
                     step,
