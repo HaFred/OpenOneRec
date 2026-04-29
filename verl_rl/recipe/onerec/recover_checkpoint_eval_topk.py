@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-script", type=Path, default=repo_dir / "eval/openonerec_eval.py")
     parser.add_argument("--server-script", type=Path, default=repo_dir / "recipe/onerec/vllm_openai_server_compat.py")
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--merge-backend", default="fsdp", help="Backend passed to verl.model_merger for actor checkpoints.")
+    parser.add_argument("--force-merge", action="store_true", help="Rebuild merged model dirs even when they already exist.")
     parser.add_argument("--test-parquet", type=Path, default=repo_dir.parent / "data/test.parquet")
     parser.add_argument("--test-max-sample", type=int, default=int(os.environ.get("EVAL_TEST_MAX_SAMPLE", "-1")))
     parser.add_argument("--k-values", default=os.environ.get("EVAL_K_VALUES", "1,32"))
@@ -103,6 +105,8 @@ def step_from_path(path: Path) -> int:
 
 def discover_merged_checkpoints(merged_root: Path, selected_steps: set[int] | None) -> list[tuple[int, Path]]:
     checkpoints = []
+    if not merged_root.is_dir():
+        return checkpoints
     for path in merged_root.glob("global_step_*"):
         if not path.is_dir():
             continue
@@ -114,6 +118,100 @@ def discover_merged_checkpoints(merged_root: Path, selected_steps: set[int] | No
             continue
         checkpoints.append((step, path.resolve()))
     return sorted(checkpoints)
+
+
+def discover_actor_checkpoints(original_root: Path, selected_steps: set[int] | None) -> list[tuple[int, Path]]:
+    checkpoints = []
+    if not original_root.is_dir():
+        return checkpoints
+    for path in original_root.glob("global_step_*"):
+        if not path.is_dir():
+            continue
+        try:
+            step = step_from_path(path)
+        except ValueError:
+            continue
+        if selected_steps is not None and step not in selected_steps:
+            continue
+        actor_path = path / "actor"
+        if actor_path.is_dir():
+            checkpoints.append((step, actor_path.resolve()))
+    return sorted(checkpoints)
+
+
+def merge_actor_checkpoint(
+    args: argparse.Namespace,
+    step: int,
+    actor_checkpoint: Path,
+    target_dir: Path,
+    log_path: Path,
+) -> Path | None:
+    if target_dir.is_dir() and any(target_dir.iterdir()) and not args.force_merge:
+        print(f"[recover_eval] Reusing merged global_step_{step}: {target_dir}", flush=True)
+        return target_dir.resolve()
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        args.python,
+        "-m",
+        "verl.model_merger",
+        "merge",
+        "--backend",
+        args.merge_backend,
+        "--local_dir",
+        str(actor_checkpoint),
+        "--target_dir",
+        str(target_dir),
+    ]
+    print(
+        f"[recover_eval] Merging global_step_{step}: {actor_checkpoint} -> {target_dir}",
+        flush=True,
+    )
+    with log_path.open("w", encoding="utf-8") as log_handle:
+        process = subprocess.run(
+            cmd,
+            cwd=str(args.eval_script.resolve().parents[1]),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    if process.returncode != 0:
+        print(f"[recover_eval] Merge failed for global_step_{step}; see {log_path}", flush=True)
+        return None
+
+    return target_dir.resolve()
+
+
+def ensure_merged_checkpoints(
+    args: argparse.Namespace,
+    merged_root: Path,
+    original_root: Path,
+    selected_steps: set[int] | None,
+    result_dir: Path,
+) -> list[tuple[int, Path]]:
+    merged_by_step = dict(discover_merged_checkpoints(merged_root, selected_steps))
+    actor_checkpoints = discover_actor_checkpoints(original_root, selected_steps)
+
+    for step, actor_checkpoint in actor_checkpoints:
+        target_dir = merged_root / f"global_step_{step}"
+        if step in merged_by_step and target_dir.is_dir() and any(target_dir.iterdir()) and not args.force_merge:
+            continue
+        merged_path = merge_actor_checkpoint(
+            args,
+            step,
+            actor_checkpoint,
+            target_dir,
+            result_dir / f"global_step_{step}.merge.log",
+        )
+        if merged_path is not None:
+            merged_by_step[step] = merged_path
+
+    return sorted(merged_by_step.items())
 
 
 def read_metric(result_path: Path, metric: str) -> float | None:
@@ -576,8 +674,6 @@ def main() -> int:
 
     if args.top_k <= 0:
         raise ValueError("--top-k must be positive")
-    if not merged_root.is_dir():
-        raise FileNotFoundError(f"Merged checkpoint root does not exist: {merged_root}")
     if not args.eval_script.is_file():
         raise FileNotFoundError(f"Eval script does not exist: {args.eval_script}")
     if args.backend == "serving" and not args.server_script.is_file():
@@ -586,9 +682,11 @@ def main() -> int:
         raise FileNotFoundError(f"Test parquet does not exist: {args.test_parquet}")
 
     selected_steps = set(args.steps) if args.steps is not None else None
-    checkpoints = discover_merged_checkpoints(merged_root, selected_steps)
+    checkpoints = ensure_merged_checkpoints(args, merged_root, original_root, selected_steps, result_dir)
     if not checkpoints:
-        raise FileNotFoundError(f"No merged global_step_* checkpoints found under {merged_root}")
+        raise FileNotFoundError(
+            f"No merged checkpoints found under {merged_root} and no actor checkpoints found under {original_root}"
+        )
 
     print(f"[recover_eval] Found {len(checkpoints)} merged checkpoints under {merged_root}", flush=True)
     prefix_records, checkpoints_to_eval = split_valid_json_prefix(args, checkpoints, result_dir, original_root)
