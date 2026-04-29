@@ -19,10 +19,11 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import json
+import fnmatch
+import math
 import os
 import re
 import shutil
-import subprocess
 import time
 import uuid
 from collections import defaultdict
@@ -30,7 +31,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from pprint import pprint
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import ray
@@ -933,6 +934,17 @@ class RayPPOTrainer:
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
 
         data_sources = np.concatenate(data_source_lst, axis=0)
+        pass_at_k_metrics = self._add_pass_at_k_reward_info(
+            reward_extra_infos_dict=reward_extra_infos_dict,
+            data_sources=data_sources,
+            sample_inputs=sample_inputs,
+            k=32,
+        )
+        if "pass_at_32" in reward_extra_infos_dict:
+            for key, value in pass_at_k_metrics.items():
+                data_source = key.split("/")[1] if "/" in key else "unknown"
+                print(f"[pass_at_32] {data_source}: {value}")
+            print(f"len reward_extra_infos_dict['pass_at_32']: {len(reward_extra_infos_dict['pass_at_32'])}")
 
         # Debug: Check for duplicate prompts
         from collections import Counter
@@ -946,8 +958,16 @@ class RayPPOTrainer:
             print(f"[Validation Debug] No duplicate prompts found. Total unique prompts: {len(prompt_counts)}")
         print(f"[Validation Debug] Total samples: {len(sample_inputs)}, Total scores: {len(sample_scores)}")
 
-        data_src2var2metric2val = process_validation_metrics(data_sources, sample_inputs, reward_extra_infos_dict)
+        validation_infos_for_aggregation = {
+            key: values for key, values in reward_extra_infos_dict.items() if key != "pass_at_32"
+        }
+        data_src2var2metric2val = process_validation_metrics(
+            data_sources,
+            sample_inputs,
+            validation_infos_for_aggregation,
+        )
         metric_dict = {}
+        pass_at_aliases = {}
         for data_source, var2metric2val in data_src2var2metric2val.items():
             core_var = "acc" if "acc" in var2metric2val else "reward"
             for var_name, metric2val in var2metric2val.items():
@@ -963,6 +983,18 @@ class RayPPOTrainer:
                         metric_sec = "val-aux"
                     pfx = f"{metric_sec}/{data_source}/{var_name}/{metric_name}"
                     metric_dict[pfx] = metric_val
+                    if (
+                        var_name in {"pass_at_1", "score"}
+                        and metric_name == f"best@{n_max}/mean"
+                        and n_max > 1
+                    ):
+                        alias = f"val-aux/{data_source}/pass_at_{n_max}/mean"
+                        if var_name == "pass_at_1" or alias not in pass_at_aliases:
+                            pass_at_aliases[alias] = metric_val
+
+        metric_dict.update(pass_at_aliases)
+        metric_dict.update(pass_at_k_metrics)
+        metric_dict.update({f"{key}/mean": value for key, value in pass_at_k_metrics.items()})
 
         if len(sample_turns) > 0:
             sample_turns = np.concatenate(sample_turns)
@@ -1086,7 +1118,7 @@ class RayPPOTrainer:
                 worker_group=self.actor_rollout_wg,
             )
 
-    def _save_checkpoint(self):
+    def _save_checkpoint(self, metrics=None):
         from verl.utils.fs import local_mkdir_safe
 
         # path: given_path + `/global_step_{global_steps}` + `/actor`
@@ -1144,7 +1176,7 @@ class RayPPOTrainer:
         with open(local_latest_checkpointed_iteration, "w") as f:
             f.write(str(self.global_steps))
 
-        self._evaluate_and_prune_checkpoint(local_global_step_folder)
+        self._evaluate_and_prune_checkpoint(local_global_step_folder, metrics=metrics)
 
     @staticmethod
     def _config_bool(value, default=False):
@@ -1156,142 +1188,166 @@ class RayPPOTrainer:
             return value.strip().lower() in {"1", "true", "yes", "y", "on"}
         return bool(value)
 
-    def _evaluate_and_prune_checkpoint(self, local_global_step_folder):
-        if not self._config_bool(self.config.trainer.get("checkpoint_eval_enable", False)):
-            return
-
-        eval_score = self._run_checkpoint_eval(local_global_step_folder)
-        if eval_score is None:
-            print(
-                f"[checkpoint_eval] Skipping best-checkpoint pruning because evaluation failed for "
-                f"{local_global_step_folder}."
-            )
-            return
-
-        self._prune_to_best_checkpoints(local_global_step_folder, eval_score)
-
-    def _run_checkpoint_eval(self, local_global_step_folder):
-        actor_checkpoint = os.path.join(local_global_step_folder, "actor")
-        if not os.path.isdir(actor_checkpoint):
-            print(f"[checkpoint_eval] Actor checkpoint not found: {actor_checkpoint}")
-            return None
-
-        script_path = self.config.trainer.get("checkpoint_eval_script", None)
-        if not script_path:
-            script_path = os.path.join(os.path.dirname(__file__), "eval.sh")
-        script_path = os.path.abspath(os.path.expanduser(str(script_path)))
-        if not os.path.isfile(script_path):
-            print(f"[checkpoint_eval] Eval script not found: {script_path}")
-            return None
-
-        ckpt_root = os.path.abspath(str(self.config.trainer.default_local_dir))
-        result_dir = os.path.join(ckpt_root, "checkpoint_eval_results")
-        merged_model_dir = os.path.join(ckpt_root, "checkpoint_eval_merged", f"global_step_{self.global_steps}")
-        result_filename = f"global_step_{self.global_steps}.json"
-        log_path = os.path.join(result_dir, f"global_step_{self.global_steps}.log")
-        os.makedirs(result_dir, exist_ok=True)
-
-        env = os.environ.copy()
-        env.update(
-            {
-                "ACTOR_CHECKPOINT": actor_checkpoint,
-                "CHECKPOINT_ROOT": ckpt_root,
-                "GLOBAL_STEP": str(self.global_steps),
-                "MERGED_MODEL_DIR": merged_model_dir,
-                "RESULT_DIR": result_dir,
-                "RESULT_FILENAME": result_filename,
-                "EVAL_K_VALUES": str(self.config.trainer.get("checkpoint_eval_k_values", "1,32")),
-                "EVAL_TEST_MAX_SAMPLE": str(self.config.trainer.get("checkpoint_eval_test_max_sample", -1)),
-            }
-        )
-        eval_cuda_visible_devices = self.config.trainer.get(
-            "checkpoint_eval_cuda_visible_devices", os.environ.get("EVAL_CUDA_VISIBLE_DEVICES")
-        )
-        if eval_cuda_visible_devices:
-            # Ray masks CUDA_VISIBLE_DEVICES for the trainer actor because it does not own GPUs.
-            # Restore the user-selected eval devices for the subprocess that runs vLLM.
-            env["EVAL_CUDA_VISIBLE_DEVICES"] = str(eval_cuda_visible_devices)
-            env["CUDA_VISIBLE_DEVICES"] = str(eval_cuda_visible_devices)
-
-        cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-        cmd = ["bash", script_path, actor_checkpoint]
-        print(f"[checkpoint_eval] Evaluating checkpoint with command: {' '.join(cmd)}")
-        started_at = time.time()
+    @staticmethod
+    def _as_float(value: Any, default: float = 0.0) -> float:
         try:
-            completed = subprocess.run(
-                cmd,
-                cwd=cwd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-            )
-        except Exception as exc:
-            print(f"[checkpoint_eval] Failed to start evaluation: {exc}")
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _as_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _cfg_get(config, key, default=None):
+        if config is None:
+            return default
+        if isinstance(config, dict):
+            return config.get(key, default)
+        try:
+            return config.get(key, default)
+        except (AttributeError, TypeError):
+            return getattr(config, key, default)
+
+    def _expected_actor_lr(self) -> float | None:
+        optim_config = self._cfg_get(self.config.actor_rollout_ref.actor, "optim", None)
+        if optim_config is None:
             return None
 
-        with open(log_path, "w", encoding="utf-8") as handle:
-            handle.write(completed.stdout or "")
+        base_lr = self._as_float(self._cfg_get(optim_config, "lr", None), default=-1.0)
+        if base_lr < 0:
+            return None
 
-        elapsed = time.time() - started_at
-        print(
-            f"[checkpoint_eval] Eval finished for global_step_{self.global_steps} "
-            f"with exit code {completed.returncode} in {elapsed:.1f}s. Log: {log_path}"
+        total_steps = self._as_int(
+            self._cfg_get(optim_config, "total_training_steps", self.total_training_steps),
+            default=self.total_training_steps,
         )
-        if completed.returncode != 0:
-            print(completed.stdout[-4000:] if completed.stdout else "[checkpoint_eval] No eval output captured.")
+        if total_steps <= 0:
+            total_steps = self.total_training_steps
+
+        warmup_steps = self._as_int(self._cfg_get(optim_config, "lr_warmup_steps", -1), default=-1)
+        if warmup_steps <= 0:
+            warmup_ratio = self._as_float(self._cfg_get(optim_config, "lr_warmup_steps_ratio", 0.0), default=0.0)
+            warmup_steps = int(warmup_ratio * total_steps)
+
+        step = max(self._as_int(getattr(self, "global_steps", 0), default=0), 0)
+        if warmup_steps > 0 and step < warmup_steps:
+            return base_lr * float(step) / float(max(1, warmup_steps))
+
+        scheduler_type = self._cfg_get(
+            optim_config,
+            "lr_scheduler_type",
+            self._cfg_get(optim_config, "warmup_style", "constant"),
+        )
+        if scheduler_type != "cosine":
+            return base_lr
+
+        decay_steps = max(1, total_steps - warmup_steps)
+        progress = min(1.0, max(0.0, float(step - warmup_steps) / float(decay_steps)))
+        min_lr_ratio = self._as_float(self._cfg_get(optim_config, "min_lr_ratio", 0.0), default=0.0)
+        num_cycles = self._as_float(self._cfg_get(optim_config, "num_cycles", 0.5), default=0.5)
+        cosine_scale = 0.5 * (1.0 + math.cos(math.pi * 2.0 * num_cycles * progress))
+        return base_lr * (min_lr_ratio + (1.0 - min_lr_ratio) * cosine_scale)
+
+    def _add_actor_lr_metrics(self, metrics: dict[str, Any]) -> None:
+        optim_config = self._cfg_get(self.config.actor_rollout_ref.actor, "optim", None)
+        if optim_config is not None and "actor/base_lr" not in metrics:
+            base_lr = self._as_float(self._cfg_get(optim_config, "lr", None), default=-1.0)
+            if base_lr >= 0:
+                metrics["actor/base_lr"] = base_lr
+
+        if "actor/lr" in metrics:
+            return
+        if "lr" in metrics:
+            metrics["actor/lr"] = metrics["lr"]
+            return
+
+        expected_lr = self._expected_actor_lr()
+        if expected_lr is not None:
+            metrics["actor/lr"] = expected_lr
+
+    @staticmethod
+    def _add_pass_at_k_reward_info(
+        reward_extra_infos_dict: dict[str, list],
+        data_sources: np.ndarray,
+        sample_inputs: list[str],
+        k: int = 32,
+    ) -> dict[str, float]:
+        pass_at_1_values = reward_extra_infos_dict.get("pass_at_1")
+        if not pass_at_1_values:
+            return {}
+
+        grouped_indices = defaultdict(list)
+        for idx, (data_source, prompt) in enumerate(zip(data_sources, sample_inputs, strict=True)):
+            grouped_indices[(data_source, prompt)].append(idx)
+
+        pass_at_k_values = [0.0] * len(pass_at_1_values)
+        source_values = defaultdict(list)
+        for (data_source, _prompt), indices in grouped_indices.items():
+            candidate_indices = indices[:k]
+            group_value = float(max(float(pass_at_1_values[idx]) for idx in candidate_indices))
+            source_values[data_source].append(group_value)
+            for idx in indices:
+                pass_at_k_values[idx] = group_value
+
+        reward_extra_infos_dict[f"pass_at_{k}"] = pass_at_k_values
+        return {
+            f"val-aux/{data_source}/pass_at_{k}": float(np.mean(values))
+            for data_source, values in source_values.items()
+            if values
+        }
+
+    def _checkpoint_score_from_metrics(self, local_global_step_folder, metrics):
+        if not metrics:
             return None
 
-        result_path = os.path.join(result_dir, result_filename)
-        metric_name = str(self.config.trainer.get("checkpoint_eval_metric", "pass@32"))
-        score = self._read_checkpoint_eval_metric(result_path, metric_name)
-        if score is None:
-            score = self._parse_checkpoint_eval_metric(completed.stdout or "", metric_name)
-        if score is None:
-            print(f"[checkpoint_eval] Could not parse {metric_name} from eval output or {result_path}.")
+        metric_pattern = str(self.config.trainer.get("best_ckpt_metric", "val-aux/*/pass_at_32/mean"))
+        exact_matches = []
+        wildcard_matches = []
+        for key, value in metrics.items():
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+
+            if key == metric_pattern:
+                exact_matches.append((key, numeric_value))
+            elif fnmatch.fnmatch(key, metric_pattern):
+                wildcard_matches.append((key, numeric_value))
+
+        matches = exact_matches or wildcard_matches
+        if not matches:
             return None
 
-        print(f"[checkpoint_eval] global_step_{self.global_steps} {metric_name}={score:.6f}")
+        score = sum(value for _, value in matches) / len(matches)
         return {
             "score": float(score),
-            "metric": metric_name,
+            "metric": metric_pattern,
+            "matched_metrics": {key: value for key, value in matches},
             "path": os.path.abspath(local_global_step_folder),
-            "actor_checkpoint": os.path.abspath(actor_checkpoint),
-            "merged_model_dir": os.path.abspath(merged_model_dir),
-            "result_path": os.path.abspath(result_path),
-            "log_path": os.path.abspath(log_path),
             "global_step": int(self.global_steps),
             "evaluated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-    @staticmethod
-    def _read_checkpoint_eval_metric(result_path, metric_name):
-        if not os.path.isfile(result_path):
-            return None
-        try:
-            with open(result_path, "r", encoding="utf-8") as handle:
-                result = json.load(handle)
-        except Exception as exc:
-            print(f"[checkpoint_eval] Failed to read eval result JSON {result_path}: {exc}")
-            return None
+    def _evaluate_and_prune_checkpoint(self, local_global_step_folder, metrics=None):
+        if not self._config_bool(self.config.trainer.get("best_ckpt_prune_enable", True), default=True):
+            print("[checkpoint_eval] best_ckpt_prune_enable is false; skipping best-checkpoint pruning.")
+            return
 
-        evaluation = result.get("evaluation", {})
-        value = evaluation.get(metric_name)
-        if value is None and metric_name == "pass@32":
-            value = evaluation.get("pass_at_32")
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+        eval_score = self._checkpoint_score_from_metrics(local_global_step_folder, metrics)
+        if eval_score is None:
+            metric_pattern = self.config.trainer.get("best_ckpt_metric", "val-aux/*/pass_at_32/mean")
+            print(
+                f"[checkpoint_eval] No logged checkpoint metric matching {metric_pattern}; "
+                f"skipping best-checkpoint pruning for {local_global_step_folder}."
+            )
+            return
 
-    @staticmethod
-    def _parse_checkpoint_eval_metric(output, metric_name):
-        escaped_metric = re.escape(metric_name)
-        matches = re.findall(rf"{escaped_metric}\s*[:=]\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))", output)
-        if not matches:
-            return None
-        return float(matches[-1])
+        self._prune_to_best_checkpoints(local_global_step_folder, eval_score)
 
     def _prune_to_best_checkpoints(self, local_global_step_folder, eval_score):
         keep_count = int(self.config.trainer.get("best_ckpts_to_keep", 3))
@@ -1329,10 +1385,6 @@ class RayPPOTrainer:
                     f"{path} ({record.get('metric')}={record.get('score')})"
                 )
                 shutil.rmtree(path, ignore_errors=True)
-
-            merged_model_dir = record.get("merged_model_dir")
-            if merged_model_dir and os.path.isdir(merged_model_dir):
-                shutil.rmtree(merged_model_dir, ignore_errors=True)
 
         latest_tracker = os.path.join(ckpt_root, "latest_checkpointed_iteration.txt")
         if keep_records:
@@ -2054,6 +2106,7 @@ class RayPPOTrainer:
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+                    self._add_actor_lr_metrics(metrics)
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
@@ -2111,7 +2164,7 @@ class RayPPOTrainer:
                         if esi_close_to_expiration:
                             print("Force saving checkpoint: ESI instance expiration approaching.")
                         with marked_timer("save_checkpoint", timing_raw, color="green"):
-                            self._save_checkpoint()
+                            self._save_checkpoint(metrics=metrics)
 
                 with marked_timer("stop_profile", timing_raw):
                     self._stop_profiling(do_profile)
