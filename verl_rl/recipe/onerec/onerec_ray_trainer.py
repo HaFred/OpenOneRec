@@ -20,6 +20,10 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import json
 import os
+import re
+import shutil
+import subprocess
+import time
 import uuid
 from collections import defaultdict
 from copy import deepcopy
@@ -1139,6 +1143,212 @@ class RayPPOTrainer:
         )
         with open(local_latest_checkpointed_iteration, "w") as f:
             f.write(str(self.global_steps))
+
+        self._evaluate_and_prune_checkpoint(local_global_step_folder)
+
+    @staticmethod
+    def _config_bool(value, default=False):
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
+    def _evaluate_and_prune_checkpoint(self, local_global_step_folder):
+        if not self._config_bool(self.config.trainer.get("checkpoint_eval_enable", False)):
+            return
+
+        eval_score = self._run_checkpoint_eval(local_global_step_folder)
+        if eval_score is None:
+            print(
+                f"[checkpoint_eval] Skipping best-checkpoint pruning because evaluation failed for "
+                f"{local_global_step_folder}."
+            )
+            return
+
+        self._prune_to_best_checkpoints(local_global_step_folder, eval_score)
+
+    def _run_checkpoint_eval(self, local_global_step_folder):
+        actor_checkpoint = os.path.join(local_global_step_folder, "actor")
+        if not os.path.isdir(actor_checkpoint):
+            print(f"[checkpoint_eval] Actor checkpoint not found: {actor_checkpoint}")
+            return None
+
+        script_path = self.config.trainer.get("checkpoint_eval_script", None)
+        if not script_path:
+            script_path = os.path.join(os.path.dirname(__file__), "eval.sh")
+        script_path = os.path.abspath(os.path.expanduser(str(script_path)))
+        if not os.path.isfile(script_path):
+            print(f"[checkpoint_eval] Eval script not found: {script_path}")
+            return None
+
+        ckpt_root = os.path.abspath(str(self.config.trainer.default_local_dir))
+        result_dir = os.path.join(ckpt_root, "checkpoint_eval_results")
+        merged_model_dir = os.path.join(ckpt_root, "checkpoint_eval_merged", f"global_step_{self.global_steps}")
+        result_filename = f"global_step_{self.global_steps}.json"
+        log_path = os.path.join(result_dir, f"global_step_{self.global_steps}.log")
+        os.makedirs(result_dir, exist_ok=True)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "ACTOR_CHECKPOINT": actor_checkpoint,
+                "CHECKPOINT_ROOT": ckpt_root,
+                "GLOBAL_STEP": str(self.global_steps),
+                "MERGED_MODEL_DIR": merged_model_dir,
+                "RESULT_DIR": result_dir,
+                "RESULT_FILENAME": result_filename,
+                "EVAL_K_VALUES": str(self.config.trainer.get("checkpoint_eval_k_values", "1,32")),
+                "EVAL_TEST_MAX_SAMPLE": str(self.config.trainer.get("checkpoint_eval_test_max_sample", -1)),
+            }
+        )
+
+        cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+        cmd = ["bash", script_path, actor_checkpoint]
+        print(f"[checkpoint_eval] Evaluating checkpoint with command: {' '.join(cmd)}")
+        started_at = time.time()
+        try:
+            completed = subprocess.run(
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+        except Exception as exc:
+            print(f"[checkpoint_eval] Failed to start evaluation: {exc}")
+            return None
+
+        with open(log_path, "w", encoding="utf-8") as handle:
+            handle.write(completed.stdout or "")
+
+        elapsed = time.time() - started_at
+        print(
+            f"[checkpoint_eval] Eval finished for global_step_{self.global_steps} "
+            f"with exit code {completed.returncode} in {elapsed:.1f}s. Log: {log_path}"
+        )
+        if completed.returncode != 0:
+            print(completed.stdout[-4000:] if completed.stdout else "[checkpoint_eval] No eval output captured.")
+            return None
+
+        result_path = os.path.join(result_dir, result_filename)
+        metric_name = str(self.config.trainer.get("checkpoint_eval_metric", "pass@32"))
+        score = self._read_checkpoint_eval_metric(result_path, metric_name)
+        if score is None:
+            score = self._parse_checkpoint_eval_metric(completed.stdout or "", metric_name)
+        if score is None:
+            print(f"[checkpoint_eval] Could not parse {metric_name} from eval output or {result_path}.")
+            return None
+
+        print(f"[checkpoint_eval] global_step_{self.global_steps} {metric_name}={score:.6f}")
+        return {
+            "score": float(score),
+            "metric": metric_name,
+            "path": os.path.abspath(local_global_step_folder),
+            "actor_checkpoint": os.path.abspath(actor_checkpoint),
+            "merged_model_dir": os.path.abspath(merged_model_dir),
+            "result_path": os.path.abspath(result_path),
+            "log_path": os.path.abspath(log_path),
+            "global_step": int(self.global_steps),
+            "evaluated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    @staticmethod
+    def _read_checkpoint_eval_metric(result_path, metric_name):
+        if not os.path.isfile(result_path):
+            return None
+        try:
+            with open(result_path, "r", encoding="utf-8") as handle:
+                result = json.load(handle)
+        except Exception as exc:
+            print(f"[checkpoint_eval] Failed to read eval result JSON {result_path}: {exc}")
+            return None
+
+        evaluation = result.get("evaluation", {})
+        value = evaluation.get(metric_name)
+        if value is None and metric_name == "pass@32":
+            value = evaluation.get("pass_at_32")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_checkpoint_eval_metric(output, metric_name):
+        escaped_metric = re.escape(metric_name)
+        matches = re.findall(rf"{escaped_metric}\s*[:=]\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))", output)
+        if not matches:
+            return None
+        return float(matches[-1])
+
+    def _prune_to_best_checkpoints(self, local_global_step_folder, eval_score):
+        keep_count = int(self.config.trainer.get("best_ckpts_to_keep", 3))
+        if keep_count <= 0:
+            print("[checkpoint_eval] best_ckpts_to_keep <= 0; skipping pruning.")
+            return
+
+        ckpt_root = os.path.abspath(str(self.config.trainer.default_local_dir))
+        score_path = os.path.join(ckpt_root, "best_pass32_checkpoints.json")
+        os.makedirs(ckpt_root, exist_ok=True)
+
+        records = []
+        if os.path.isfile(score_path):
+            try:
+                with open(score_path, "r", encoding="utf-8") as handle:
+                    records = json.load(handle).get("checkpoints", [])
+            except Exception as exc:
+                print(f"[checkpoint_eval] Failed to read existing score file {score_path}: {exc}")
+                records = []
+
+        current_path = os.path.abspath(local_global_step_folder)
+        records = [record for record in records if os.path.isdir(record.get("path", "")) and record.get("path") != current_path]
+        records.append(eval_score)
+        records.sort(key=lambda record: (float(record.get("score", float("-inf"))), int(record.get("global_step", -1))), reverse=True)
+
+        keep_records = records[:keep_count]
+        remove_records = records[keep_count:]
+        keep_paths = {record["path"] for record in keep_records}
+
+        for record in remove_records:
+            path = record.get("path")
+            if path and os.path.isdir(path) and path not in keep_paths:
+                print(
+                    f"[checkpoint_eval] Removing checkpoint outside top {keep_count}: "
+                    f"{path} ({record.get('metric')}={record.get('score')})"
+                )
+                shutil.rmtree(path, ignore_errors=True)
+
+            merged_model_dir = record.get("merged_model_dir")
+            if merged_model_dir and os.path.isdir(merged_model_dir):
+                shutil.rmtree(merged_model_dir, ignore_errors=True)
+
+        latest_tracker = os.path.join(ckpt_root, "latest_checkpointed_iteration.txt")
+        if keep_records:
+            latest_kept_step = max(int(record["global_step"]) for record in keep_records)
+            with open(latest_tracker, "w", encoding="utf-8") as handle:
+                handle.write(str(latest_kept_step))
+
+        with open(score_path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "metric": eval_score["metric"],
+                    "keep_count": keep_count,
+                    "checkpoints": keep_records,
+                },
+                handle,
+                indent=2,
+            )
+
+        print(
+            "[checkpoint_eval] Best checkpoints: "
+            + ", ".join(
+                f"global_step_{record['global_step']}={float(record['score']):.6f}" for record in keep_records
+            )
+        )
 
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == "disable":
