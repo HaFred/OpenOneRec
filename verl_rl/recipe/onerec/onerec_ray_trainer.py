@@ -1204,6 +1204,14 @@ class RayPPOTrainer:
                 "EVAL_TEST_MAX_SAMPLE": str(self.config.trainer.get("checkpoint_eval_test_max_sample", -1)),
             }
         )
+        eval_cuda_visible_devices = self.config.trainer.get(
+            "checkpoint_eval_cuda_visible_devices", os.environ.get("EVAL_CUDA_VISIBLE_DEVICES")
+        )
+        if eval_cuda_visible_devices:
+            # Ray masks CUDA_VISIBLE_DEVICES for the trainer actor because it does not own GPUs.
+            # Restore the user-selected eval devices for the subprocess that runs vLLM.
+            env["EVAL_CUDA_VISIBLE_DEVICES"] = str(eval_cuda_visible_devices)
+            env["CUDA_VISIBLE_DEVICES"] = str(eval_cuda_visible_devices)
 
         cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
         cmd = ["bash", script_path, actor_checkpoint]
@@ -1350,6 +1358,29 @@ class RayPPOTrainer:
             )
         )
 
+    @staticmethod
+    def _find_latest_local_checkpoint_by_scan(checkpoint_folder):
+        if not checkpoint_folder or not os.path.isdir(checkpoint_folder):
+            return None
+
+        latest_step = -1
+        latest_path = None
+        for name in os.listdir(checkpoint_folder):
+            match = re.fullmatch(r"global_step_(\d+)", name)
+            if match is None:
+                continue
+            ckpt_path = os.path.join(checkpoint_folder, name)
+            actor_path = os.path.join(ckpt_path, "actor")
+            if not os.path.isdir(actor_path):
+                continue
+            step = int(match.group(1))
+            if step > latest_step:
+                latest_step = step
+                latest_path = ckpt_path
+        if latest_path is not None:
+            print(f"Found latest checkpoint by directory scan: {latest_path}")
+        return latest_path
+
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == "disable":
             return 0
@@ -1367,8 +1398,10 @@ class RayPPOTrainer:
         # find global_step_folder
         if self.config.trainer.resume_mode == "auto":
             if global_step_folder is None:
-                print("Training from scratch")
-                return 0
+                global_step_folder = self._find_latest_local_checkpoint_by_scan(checkpoint_folder)
+                if global_step_folder is None:
+                    print("Training from scratch")
+                    return 0
         else:
             if self.config.trainer.resume_mode == "resume_path":
                 assert isinstance(self.config.trainer.resume_from_path, str), "resume ckpt must be str type"

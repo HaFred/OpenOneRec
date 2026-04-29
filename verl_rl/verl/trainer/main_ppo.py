@@ -17,6 +17,7 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 
 import os
 import socket
+from inspect import signature
 
 import hydra
 import ray
@@ -281,12 +282,18 @@ def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=Tr
     print(f"Using dataset class: {dataset_cls.__name__}")
 
     # Instantiate the dataset using the determined dataset class
-    dataset = dataset_cls(
-        data_files=data_paths,
-        tokenizer=tokenizer,
-        processor=processor,
-        config=data_config,
-    )
+    dataset_kwargs = {
+        "data_files": data_paths,
+        "tokenizer": tokenizer,
+        "processor": processor,
+        "config": data_config,
+    }
+    if "max_samples" in signature(dataset_cls.__init__).parameters:
+        max_samples_key = "train_max_samples" if is_train else "val_max_samples"
+        dataset_kwargs["max_samples"] = data_config.get(max_samples_key, -1)
+        print(f"Using {max_samples_key}={dataset_kwargs['max_samples']} for {dataset_cls.__name__}")
+
+    dataset = dataset_cls(**dataset_kwargs)
 
     return dataset
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd /home/dyvm6xra/dyvm6xrauser45/fred/openonerec_fredfork/verl_rl
 clear
-export EVAL_BACKEND="${EVAL_BACKEND:-serving}"
+export EVAL_BACKEND="${EVAL_BACKEND:-offline}"
 export EVAL_TENSOR_PARALLEL_SIZE="${EVAL_TENSOR_PARALLEL_SIZE:-1}"
 export EVAL_DATA_PARALLEL_SIZE="${EVAL_DATA_PARALLEL_SIZE:-8}"
 export EVAL_INTERNAL_DATA_PARALLEL_SIZE="${EVAL_INTERNAL_DATA_PARALLEL_SIZE:-1}"

@@ -76,6 +76,8 @@ class OneRecDataset(Dataset):
         self.return_multi_modal_inputs = config.get("return_multi_modal_inputs", True)
         self.enable_think = config.get("enable_think", True)
         self.enable_nonthink = config.get("enable_nonthink", False)
+        self.shuffle = config.get("shuffle", False)
+        self.seed = config.get("seed", None)
 
         self.use_force_prefix = config.get("use_force_prefix", False)
         self._FORCE_PREFIX_CONTENT = "<think>\n</think><|sid_begin|>"
@@ -117,6 +119,7 @@ class OneRecDataset(Dataset):
         logger.info("dataset len: %s", len(self.dataframe))
 
         if self.max_samples > 0 and self.max_samples < len(self.dataframe):
+            original_len = len(self.dataframe)
             if self.shuffle:
                 rngs_args = (self.seed,) if self.seed is not None else ()
                 rng = np.random.default_rng(*rngs_args)
@@ -124,7 +127,7 @@ class OneRecDataset(Dataset):
             else:
                 indices = np.arange(self.max_samples)
             self.dataframe = self.dataframe.select(indices.tolist())
-            print(f"selected {self.max_samples} random samples out of {len(self.dataframe)}")
+            print(f"selected {len(self.dataframe)} samples out of {original_len}")
 
         self.dataframe = self.dataframe.map(
             self._extract_prompt_fields,

@@ -62,6 +62,7 @@ start_time=$(date +%s)
 echo "Eval started at: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "Eval script: $EVAL_PY"
 echo "Test parquet: $TEST_PARQUET"
+echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-<unset>}"
 
 python "$EVAL_PY" \
   "${checkpoint_args[@]}" \

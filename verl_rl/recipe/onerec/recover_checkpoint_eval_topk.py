@@ -127,6 +127,14 @@ def read_metric(result_path: Path, metric: str) -> float | None:
         return None
 
     evaluation = result.get("evaluation", {})
+    try:
+        evaluated_samples = int(evaluation.get("evaluated_samples", 0))
+        total_samples = int(evaluation.get("total_samples", 0))
+    except (TypeError, ValueError):
+        return None
+    if evaluated_samples <= 0 or total_samples <= 0:
+        return None
+
     value = evaluation.get(metric)
     if value is None and metric == "pass@32":
         value = evaluation.get("pass_at_32")
@@ -141,11 +149,18 @@ def parse_metric_from_log(log_path: Path, metric: str) -> float | None:
         return None
     escaped_metric = re.escape(metric)
     pattern = re.compile(rf"(?<![A-Za-z0-9_]){escaped_metric}\s*[:=]\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))")
+    evaluated_pattern = re.compile(r"Evaluated\s*/\s*Total\s*:\s*(\d+)\s*/\s*(\d+)")
     try:
-        matches = pattern.findall(log_path.read_text(encoding="utf-8", errors="replace"))
+        text = log_path.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:
         print(f"[recover_eval] Failed to read {log_path}: {exc}", flush=True)
         return None
+    evaluated_matches = evaluated_pattern.findall(text)
+    if evaluated_matches:
+        evaluated, total = evaluated_matches[-1]
+        if int(evaluated) <= 0 or int(total) <= 0:
+            return None
+    matches = pattern.findall(text)
     if not matches:
         return None
     return float(matches[-1])
@@ -490,6 +505,36 @@ def make_record(
     }
 
 
+def split_valid_json_prefix(
+    args: argparse.Namespace,
+    checkpoints: list[tuple[int, Path]],
+    result_dir: Path,
+    original_root: Path,
+) -> tuple[list[dict], list[tuple[int, Path]]]:
+    if args.force_eval:
+        return [], checkpoints
+
+    prefix_records = []
+    for index, (step, merged_model) in enumerate(checkpoints):
+        result_path = result_dir / f"global_step_{step}.json"
+        log_path = result_dir / f"global_step_{step}.log"
+        score = read_metric(result_path, args.metric)
+        if score is None:
+            print(
+                f"[recover_eval] First checkpoint without valid {args.metric} JSON: "
+                f"global_step_{step}; starting evaluation from this step.",
+                flush=True,
+            )
+            return prefix_records, checkpoints[index:]
+        prefix_records.append(make_record(args, step, score, merged_model, result_path, log_path, original_root))
+
+    print(
+        f"[recover_eval] All {len(checkpoints)} checkpoints already have valid {args.metric} JSON.",
+        flush=True,
+    )
+    return prefix_records, []
+
+
 def write_ranking(
     ckpt_root: Path,
     records: list[dict],
@@ -546,7 +591,18 @@ def main() -> int:
         raise FileNotFoundError(f"No merged global_step_* checkpoints found under {merged_root}")
 
     print(f"[recover_eval] Found {len(checkpoints)} merged checkpoints under {merged_root}", flush=True)
-    records, failed_steps = evaluate_checkpoints(args, checkpoints, result_dir, original_root)
+    prefix_records, checkpoints_to_eval = split_valid_json_prefix(args, checkpoints, result_dir, original_root)
+    if prefix_records:
+        first_step = prefix_records[0]["global_step"]
+        last_step = prefix_records[-1]["global_step"]
+        print(
+            f"[recover_eval] Reusing contiguous valid JSON prefix: "
+            f"global_step_{first_step}..global_step_{last_step} ({len(prefix_records)} checkpoints).",
+            flush=True,
+        )
+
+    records, failed_steps = evaluate_checkpoints(args, checkpoints_to_eval, result_dir, original_root)
+    records.extend(prefix_records)
 
     if not records:
         print("[recover_eval] No successful evaluations; refusing to prune.", flush=True)
