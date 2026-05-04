@@ -2,23 +2,42 @@
 # GRPO Training Script with Two-Stage Rollout
 # Two-Stage Rollout: first generate to </think>, then insert <sid_begin> and beam search
 
-set -e
+# set -e
+clear
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+HYDRA_FULL_ERROR=1
+ROLLOUT_N=1
+MAX_TOKENS_PER_GPU=20480
+BASE_MODEL=/scratch/dyvm6xra/dyvm6xrauser45/fred/models--OpenOneRec--OneRec-1.7B-pretrain/snapshots/db455d0bdcf4b5e0b42f30c45d65260a49656a7f
+DATA_DIR=/home/dyvm6xra/dyvm6xrauser45/fred/openonerec_fredfork/data
+# DATA_DIR=/home/dyvm6xra/dyvm6xrauser45/fred/local_backup/v-gr-ms/verl_gr/recipes/openonerec/output/rl_data
+# OUTPUT_DIR="output/ckpt_best3_selection_on_valpassat32"
+OUTPUT_DIR="output/nothinking"
+
+export TENSORBOARD_RUN_ID=${TENSORBOARD_RUN_ID:-$(date +%Y%m%d_%H%M%S)}
+export TENSORBOARD_DIR=${OUTPUT_DIR}/${TENSORBOARD_RUN_ID}
+
+BEST_CKPTS_TO_KEEP=${BEST_CKPTS_TO_KEEP:-3}
+BEST_CKPT_PRUNE_ENABLE=${BEST_CKPT_PRUNE_ENABLE:-True}
 
 # ============================================================================
 # Cluster Configuration (auto-detect from Ray)
 # ============================================================================
-RAY_INFO=$(python -c "import ray; ray.init(address='auto', ignore_reinit_error=True); nodes = [n for n in ray.nodes() if n['Alive']]; gpus=next((int(n.get('Resources',{}).get('GPU',0)) for n in nodes if n.get('Resources',{}).get('GPU',0)>0), 0); print(f'{len(nodes)} {gpus}')" 2>/dev/null)
+# Ray auto-discovery can fail on single-node/local runs; do not hard-exit under `set -e`.
+RAY_INFO=$(python -c "import ray; ray.init(address='auto', ignore_reinit_error=True); nodes = [n for n in ray.nodes() if n['Alive']]; gpus=next((int(n.get('Resources',{}).get('GPU',0)) for n in nodes if n.get('Resources',{}).get('GPU',0)>0), 0); print(f'{len(nodes)} {gpus}')" 2>/dev/null || true)
 
 export N_NODES=$(echo $RAY_INFO | awk '{print $1}')
-export N_GPUS=$(echo $RAY_INFO | awk '{print $2}')
+# export N_GPUS=$(echo $RAY_INFO | awk '{print $2}')  
+N_NODES=1
+N_GPUS=4
 
-if [ -z "$N_NODES" ] || [ -z "$N_GPUS" ] || [ "$N_NODES" -eq 0 ]; then
-    echo "Could not detect Ray cluster. Using defaults: N_NODES=1, N_GPUS=8"
-    export N_NODES=1
-    export N_GPUS=8
-else
-    echo "Detected Ray cluster: $N_NODES nodes, $N_GPUS GPUs per node"
-fi
+# if [ -z "$N_NODES" ] || [ -z "$N_GPUS" ] || [ "$N_NODES" -eq 0 ]; then
+#     echo "Could not detect Ray cluster. Using defaults: N_NODES=1, N_GPUS=8"
+#     export N_NODES=1
+#     export N_GPUS=2
+# else
+#     echo "Detected Ray cluster: $N_NODES nodes, $N_GPUS GPUs per node"
+# fi
 
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -29,6 +48,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export BASE_MODEL=${BASE_MODEL:-"/path/to/your/model"}
 export ROLLOUT_TP_SIZE=${ROLLOUT_TP_SIZE:-1}
 export VLLM_ATTENTION_BACKEND=XFORMERS
+# export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-TORCH_SDPA}"
 
 # ============================================================================
 # Training Hyperparameters
@@ -72,6 +92,14 @@ export PROJECT_NAME=${PROJECT_NAME:-"OneRec_RL"}
 export EXPERIMENT_NAME=${EXPERIMENT_NAME:-"grpo_two_stage"}
 export OUTPUT_DIR=${OUTPUT_DIR:-"./output"}
 export WANDB_MODE=${WANDB_MODE:-offline}
+export VAL_MAX_SAMPLES=${VAL_MAX_SAMPLES:--1}
+export VAL_LOG_GENERATIONS=${VAL_LOG_GENERATIONS:-4}
+export SAVE_FREQ=${SAVE_FREQ:-20}
+export TEST_FREQ=${TEST_FREQ:-$SAVE_FREQ}
+export BEST_CKPT_METRIC=${BEST_CKPT_METRIC:-"val-aux/*/pass_at_32/mean"}
+export VAL_THINKING_TEMPERATURE=${VAL_THINKING_TEMPERATURE:-0.6}
+export VAL_THINKING_TOP_P=${VAL_THINKING_TOP_P:-0.95}
+export VAL_THINKING_TOP_K=${VAL_THINKING_TOP_K:-50}
 
 # ============================================================================
 # Network Configuration (for distributed training)
@@ -94,25 +122,27 @@ echo "Rollout N: $ROLLOUT_N"
 echo "Stage2 Beam Size: $STAGE2_BEAM_SIZE"
 echo "Enable Think: $ENABLE_THINK"
 echo "Enable NonThink: $ENABLE_NONTHINK"
+echo "TensorBoard Log: $TENSORBOARD_DIR"
 echo "==================================="
 
 # ============================================================================
 # Launch Training
 # ============================================================================
-mkdir -p logs
-
-conda activate verl
+mkdir -p logs "$TENSORBOARD_DIR"
 
 python3 -u -m recipe.onerec.main_onerec_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files=$TRAIN_FILES \
     data.val_files=$VAL_FILES \
     data.max_prompt_length=10240 \
+    ++data.train_max_samples=20000 \
+    ++data.val_max_samples=$VAL_MAX_SAMPLES \
+    ++data.filter_overlong_prompts_workers=16 \
     ++data.enable_think=$ENABLE_THINK \
     ++data.enable_nonthink=$ENABLE_NONTHINK \
     ++data.use_force_prefix=$USE_FORCE_PREFIX \
     data.prompt_key='prompt' \
-    data.shuffle=True \
+    data.shuffle=False \
     data.max_response_length=$RESPONSE_LENGTH \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
     data.filter_overlong_prompts=True \
@@ -151,11 +181,17 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     ++actor_rollout_ref.rollout.max_length=$RESPONSE_LENGTH \
     ++actor_rollout_ref.rollout.stage1_max_tokens=$STAGE1_MAX_TOKENS \
     ++actor_rollout_ref.rollout.stage2_num_tokens=$STAGE2_NUM_TOKENS \
+    ++actor_rollout_ref.rollout.stage2_max_tokens=$STAGE2_NUM_TOKENS \
     ++actor_rollout_ref.rollout.stage2_beam_size=$STAGE2_BEAM_SIZE \
     ++actor_rollout_ref.rollout.engine_kwargs.vllm.max_logprobs=320 \
     actor_rollout_ref.rollout.temperature=$TEMPERATURE \
     actor_rollout_ref.rollout.top_p=1.0 \
     actor_rollout_ref.rollout.do_sample=True \
+    actor_rollout_ref.rollout.val_kwargs.do_sample=True \
+    actor_rollout_ref.rollout.val_kwargs.temperature=$VAL_THINKING_TEMPERATURE \
+    actor_rollout_ref.rollout.val_kwargs.top_p=$VAL_THINKING_TOP_P \
+    actor_rollout_ref.rollout.val_kwargs.top_k=$VAL_THINKING_TOP_K \
+    actor_rollout_ref.rollout.val_kwargs.n=1 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=$KL_LOSS_COEF \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -164,12 +200,18 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     trainer.default_hdfs_dir=null \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=$N_NODES \
-    trainer.save_freq=50 \
-    trainer.test_freq=50 \
+    ++trainer.logger='[tensorboard, wandb]' \
+    trainer.save_freq=$SAVE_FREQ \
+    trainer.test_freq=$TEST_FREQ \
+    trainer.log_val_generations=$VAL_LOG_GENERATIONS \
+    ++trainer.best_ckpt_prune_enable=$BEST_CKPT_PRUNE_ENABLE \
+    ++trainer.best_ckpts_to_keep=$BEST_CKPTS_TO_KEEP \
+    ++trainer.best_ckpt_metric="$BEST_CKPT_METRIC" \
+    trainer.resume_mode=auto \
     trainer.project_name=$PROJECT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \
     trainer.default_local_dir=$OUTPUT_DIR/ckpt \
-    trainer.total_epochs=20 \
+    trainer.total_epochs=1 \
     trainer.val_before_train=True \
     actor_rollout_ref.ref.strategy=fsdp2 \
     actor_rollout_ref.actor.strategy=fsdp2 \
@@ -177,3 +219,6 @@ python3 -u -m recipe.onerec.main_onerec_ppo \
     ++actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
     ++actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16 \
     "$@"
+
+
+# ++trainer.remove_previous_ckpt_in_save=True \

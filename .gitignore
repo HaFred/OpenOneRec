@@ -7,6 +7,7 @@
 *.swo
 *~
 outputs
+output*
 *.parquet
 *backup*
 # OS

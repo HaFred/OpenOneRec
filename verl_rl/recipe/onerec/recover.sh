@@ -12,4 +12,6 @@ export CUDA_VISIBLE_DEVICES="$EVAL_CUDA_VISIBLE_DEVICES"
 export EVAL_SERVER_BASE_PORT="${EVAL_SERVER_BASE_PORT:-18000}"
 export EVAL_SERVER_START_TIMEOUT="${EVAL_SERVER_START_TIMEOUT:-600}"
 
-python recipe/onerec/recover_checkpoint_eval_topk.py --prune "$@"
+python recipe/onerec/recover_checkpoint_eval_topk.py \
+    --ckpt-root \
+    --prune "$@"

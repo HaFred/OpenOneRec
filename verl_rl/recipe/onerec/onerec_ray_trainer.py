@@ -769,16 +769,23 @@ class RayPPOTrainer:
             }
 
             # Check for Two-Stage Rollout in Validation
-            if rollout_config.get("enable_two_stage_rollout", False):
+            if is_two_stage_rollout_val or rollout_config.get("enable_two_stage_rollout", False):
                 meta_info["enable_two_stage_rollout"] = True
                 meta_info["stage2_beam_size"] = rollout_config.get("stage2_beam_size", 32)
-                meta_info["stage2_max_tokens"] = rollout_config.get("stage2_max_tokens", 16)
+                meta_info["stage2_max_tokens"] = rollout_config.get(
+                    "stage2_max_tokens",
+                    rollout_config.get("stage2_num_tokens", 16),
+                )
                 
                 # Stage 1 CoT config
                 meta_info["max_tokens"] = self.config.data.get("max_response_length", 1024)
+                meta_info["temperature"] = val_kwargs.get("temperature", rollout_config.get("temperature", 1.0))
+                meta_info["top_p"] = val_kwargs.get("top_p", rollout_config.get("top_p", 1.0))
+                meta_info["top_k"] = val_kwargs.get("top_k", rollout_config.get("top_k", -1))
                 # Disable standard beam search for Stage 1 (use sampling)
                 meta_info["use_beam_search"] = False
                 meta_info["n"] = val_kwargs.get("n", 1)
+                meta_info["return_all_beams"] = True
                 
                 print(f"[OneRecTrainer] Validation Two-Stage Enabled: {meta_info}")
 
@@ -938,6 +945,8 @@ class RayPPOTrainer:
             reward_extra_infos_dict=reward_extra_infos_dict,
             data_sources=data_sources,
             sample_inputs=sample_inputs,
+            sample_outputs=sample_outputs,
+            sample_ground_truths=sample_ground_truths,
             k=32,
         )
         if "pass_at_32" in reward_extra_infos_dict:
@@ -1275,31 +1284,83 @@ class RayPPOTrainer:
         reward_extra_infos_dict: dict[str, list],
         data_sources: np.ndarray,
         sample_inputs: list[str],
+        sample_outputs: list[str],
+        sample_ground_truths: list[str],
         k: int = 32,
     ) -> dict[str, float]:
-        pass_at_1_values = reward_extra_infos_dict.get("pass_at_1")
-        if not pass_at_1_values:
+        if not sample_outputs or not sample_ground_truths:
             return {}
 
         grouped_indices = defaultdict(list)
         for idx, (data_source, prompt) in enumerate(zip(data_sources, sample_inputs, strict=True)):
             grouped_indices[(data_source, prompt)].append(idx)
 
-        pass_at_k_values = [0.0] * len(pass_at_1_values)
+        pass_at_k_values = [0.0] * len(sample_outputs)
         source_values = defaultdict(list)
+        source_counts = defaultdict(lambda: [0, 0])
         for (data_source, _prompt), indices in grouped_indices.items():
             candidate_indices = indices[:k]
-            group_value = float(max(float(pass_at_1_values[idx]) for idx in candidate_indices))
+            gt_ids = RayPPOTrainer._extract_eval_sids(sample_ground_truths[indices[0]])
+            predicted = [
+                RayPPOTrainer._extract_eval_generation_sid(sample_outputs[idx])
+                for idx in candidate_indices
+            ]
+            if source_counts[data_source][1] < 3:
+                print(
+                    f"[pass_at_{k}/debug] {data_source} gt_sample={list(gt_ids)[:3]} "
+                    f"pred_top5={predicted[:5]}"
+                )
+            group_value = float(any(sid in gt_ids for sid in predicted[:k] if sid))
             source_values[data_source].append(group_value)
+            source_counts[data_source][0] += int(group_value)
+            source_counts[data_source][1] += 1
             for idx in indices:
                 pass_at_k_values[idx] = group_value
 
         reward_extra_infos_dict[f"pass_at_{k}"] = pass_at_k_values
+        for data_source, (hits, total) in source_counts.items():
+            print(f"[pass_at_{k}/evaluator_style] {data_source}: {hits}/{total} = {hits / max(total, 1):.6f}")
         return {
             f"val-aux/{data_source}/pass_at_{k}": float(np.mean(values))
             for data_source, values in source_values.items()
             if values
         }
+
+    @staticmethod
+    def _extract_eval_sids(text: Any) -> set[str]:
+        if not isinstance(text, str):
+            return set()
+
+        sids = []
+        for part in text.split("<|sid_begin|>"):
+            if "<|sid_end|>" not in part:
+                continue
+            sid = part.split("<|sid_end|>", 1)[0].strip()
+            if sid:
+                sids.append(sid)
+        return set(sids)
+
+    @staticmethod
+    def _extract_eval_generation_sid(text: Any) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        generation = text.strip()
+        if "</think>" in generation:
+            generation = generation.split("</think>")[-1].strip()
+        if "<|sid_begin|>" in generation:
+            # Trainer rollout responses can include CoT text before the stage-2
+            # prefix. The standalone evaluator only sees stage-2 beam text, so
+            # skip the pre-prefix segment here to match its SID extraction.
+            for part in generation.split("<|sid_begin|>")[1:]:
+                if "<|sid_end|>" in part:
+                    sid = part.split("<|sid_end|>", 1)[0].strip()
+                    if sid:
+                        return sid
+                sid = part.strip()
+                if sid:
+                    return sid
+        return generation
 
     def _checkpoint_score_from_metrics(self, local_global_step_folder, metrics):
         if not metrics:
@@ -1659,7 +1720,7 @@ class RayPPOTrainer:
                             print(f"[OneRecTrainer] Beam Search Enabled (optimized, no repeat): {gen_batch.meta_info}")
                         
                         # Check if Two-Stage Rollout is enabled
-                        if rollout_config.get("enable_two_stage_rollout", False):
+                        if rollout_config.get("name") == "two_stage" or rollout_config.get("enable_two_stage_rollout", False):
                             gen_batch.meta_info["enable_two_stage_rollout"] = True
                             gen_batch.meta_info["stage2_beam_size"] = rollout_config.get("stage2_beam_size", 32)
                             gen_batch.meta_info["stage2_max_tokens"] = rollout_config.get("stage2_max_tokens", 16)
@@ -1667,8 +1728,10 @@ class RayPPOTrainer:
                             gen_batch.meta_info["max_tokens"] = self.config.data.get("max_response_length", 1024) # CoT length
                             gen_batch.meta_info["temperature"] = rollout_config.get("temperature", 1.0)
                             gen_batch.meta_info["top_p"] = rollout_config.get("top_p", 1.0)
+                            gen_batch.meta_info["top_k"] = rollout_config.get("top_k", -1)
                             # Disable use_beam_search flag to prevent conflict in standard flow if both are set
                             gen_batch.meta_info["use_beam_search"] = False 
+                            gen_batch.meta_info["return_all_beams"] = True
                             
                             print(f"[OneRecTrainer] Two-Stage Rollout Enabled: {gen_batch.meta_info}")
 
